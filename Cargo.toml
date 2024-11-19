@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+allocator-api2 = "0.2.20"
+logos = "0.14.2"
+miette = { version = "7.2.0", features = ["fancy"] }
+string-interner = "0.18.0"
+strum = { version = "0.26.3", features = ["derive"] }
+thiserror = "2.0.3"
