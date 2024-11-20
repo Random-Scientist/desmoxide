@@ -10,12 +10,15 @@ use super::{BrandedExprNode, ExprNode};
 #[repr(transparent)]
 /// An index type that represents the index of an AST node for a certain lifetime.
 ///
-/// If the `'brand` lifetime is `'static` this represents a checked index (i.e. it is not certain whether the AST node this points to lies in-bounds or not)
+/// If the `'brand` lifetime is `'static` this represents an untrusted index
+/// (i.e. it is not certain whether the AST node this points to lies in-bounds or not)
 ///
-/// If the `'brand` lifetime is some other lifetime, this represents an unchecked index that is valid to use for
-/// the duration of that lifetime (and the AST with the corresponding brand is allowed to do unchecked indexing with this NodeId)
+/// If the `'brand` lifetime is some other lifetime, this represents a trusted index that known to be in-bounds for the
+/// corresponding [`Parser`] struct for the duration of that lifetime
 pub(crate) struct BrandedNodeId<'brand> {
-    phantom: PhantomData<fn(&'brand ()) -> &'brand ()>,
+    /// Invariant phantom lifetime, used to store the brand
+    _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
+    /// Inner index, stored as index + 1 for layout optimization reasons
     inner: NonZeroU32,
 }
 /// BrandedNodeId with a `'static` brand
@@ -53,7 +56,7 @@ impl BrandedNodeId<'_> {
             // Safety: inner can never be zero because idx + 1 is checked to not to overflow (the only situation where adding 1 could result in 0).
             // unchecked add is sound because it will never overflow
             inner: unsafe { NonZeroU32::new_unchecked((idx as u32).unchecked_add(1)) },
-            phantom: PhantomData,
+            _invariant_brand: PhantomData,
         }
     }
     /// Casts this BrandedNodeId to use the specified lifetime parameter as its brand
@@ -67,85 +70,26 @@ impl BrandedNodeId<'_> {
     }
 }
 
-impl<'brand> BrandedExprNode<'brand> {
-    /// Runs the given closure with a reference to a slice containing the child NodeIds of this ExprNode
-    /// (used when ensuring that provided NodeIds of an untrusted ExprNode are in-bounds if they are not provided via the unchecked API)
-    ///
-    /// Shortcuts to return `None` if a node has no children
-    fn with_children<R>(&self, cb: impl FnOnce(&[BrandedNodeId<'brand>]) -> R) -> Option<R> {
-        match self {
-            BrandedExprNode::NumberLit(_) => None,
-            BrandedExprNode::Ident(_) => None,
-            BrandedExprNode::Binary(id1, id2, _) => Some(cb(&[*id1, *id2])),
-            BrandedExprNode::Unary(id1, _) => Some(cb(&[*id1])),
-            BrandedExprNode::RangeList(range_list) => {
-                Some(if let Some(im) = &range_list.interval_marker {
-                    cb(&[*im, range_list.start, range_list.end])
-                } else {
-                    cb(&[range_list.start, range_list.end])
-                })
-            }
-            BrandedExprNode::ListLit(thin_boxed_slice) => Some(cb(thin_boxed_slice)),
-            BrandedExprNode::ListComp(thin_boxed_slice, i) => {
-                let mut v = thin_boxed_slice
-                    .iter()
-                    .map(|v| &v.1)
-                    .copied()
-                    .collect::<Vec<_>>();
-                v.push(*i);
-                Some(cb(&v))
-            }
-            BrandedExprNode::Sum { initial, end, .. } => Some(cb(&[*initial, *end])),
-            BrandedExprNode::Prod { initial, end, .. } => Some(cb(&[*initial, *end])),
-            BrandedExprNode::Integral {
-                lower,
-                upper,
-                integrand,
-            } => Some(cb(&[*lower, *upper, *integrand])),
-            BrandedExprNode::Derivative { diff } => Some(cb(&[*diff])),
-            BrandedExprNode::IntegrandOrDiff { expression, .. } => Some(cb(&[*expression])),
-        }
-    }
-    /// Removes the brand on this ExprNode, if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_val(self) -> ExprNode {
-        // Safety: transmutes that only affect lifetime parameters are unconditionally allowed (i.e. lifetime parameters cannot cause layout instability)
-        // the 'static brand is always safe to apply because it is the one brand where the creation of a corresponding UncheckedToken<'static>
-        // is impossible due to the construction invariants on it (see Parser::with_token and Parser::with_token_mut)
-        unsafe { transmute::<BrandedExprNode<'_>, BrandedExprNode<'static>>(self) }
-    }
-    /// Removes the brand on this reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_ref(&self) -> &ExprNode {
-        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
-        // cast see the above safety comments in unbrand_val above
-        unsafe { transmute::<&BrandedExprNode<'_>, &BrandedExprNode<'static>>(self) }
-    }
-    /// Removes the brand on this mutable reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_mut(&mut self) -> &mut ExprNode {
-        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
-        // cast see the above safety comments in unbrand_val above
-        unsafe { transmute::<&mut BrandedExprNode<'_>, &mut BrandedExprNode<'static>>(self) }
-    }
-}
 /// BrandedParser with the `'static` brand
 pub(crate) type Parser<'source> = BrandedParser<'source, 'static>;
 /// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
 pub(crate) struct BrandedParser<'source, 'brand> {
-    /// Stream of `Token`s to parse
+    /// Stream of [`Token`]s to parse
     lexer: SpannedIter<'source, Token>,
-    /// Contains the covered spans of the parsing carried out by various recursion levels
+    /// Contains the covered [`Span`]s of the parsing carried out by various recursion levels
     span_stack: Vec<Span>,
-    /// Contains a list of ExprNodes which can refer to each other by NodeId.
+    /// Contains a list of [`ExprNode`]s which refer to each other to form a tree via [`NodeId`]s.
     /// # Invariant
-    /// All `BrandedNodeId`s contained within `ExprNode`s in this vec have indices which fall on 0..nodes.len() (i.e. it is safe to do unchecked indexing with them)
+    /// All [`NodeId`]s contained within [`ExprNode`]s in this vec have indices which fall on 0..nodes.len() (i.e. it is safe to do unchecked indexing with them)
     nodes: Vec<ExprNode>,
-    /// A parallel list of `Span`s, each containing the corresponding Span of the ExprNode at the same index in `nodes`
+    /// A parallel list of [`Span`]s, each containing the corresponding [`Span`] of the ExprNode at the same index in `nodes`
     node_spans: Vec<Span>,
-    /// PhantomData that holds an invariant phantom lifetime for brand verification
-    _brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
+    /// Invariant phantom lifetime, used to track the brand
+    _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Token which lives for an invariant `'brand` lifetime, indicating that the user is accessing the parser from within a call to `with_tok` or `with_tok_mut`
+/// Token which lives for an invariant `'brand` lifetime, indicating that the user is working with the [`Parser`] with the same brand from within a call to `with_tok` or `with_tok_mut`
 pub(crate) struct UncheckedToken<'brand>(PhantomData<fn(&'brand ()) -> &'brand ()>);
 
 impl<'source> BrandedParser<'source, '_> {
@@ -153,7 +97,7 @@ impl<'source> BrandedParser<'source, '_> {
     /// Crucially, this lifetime *cannot* be `'static`, as the closure only knows that both values live for the duration
     /// of the closure and no longer (the closure does not run for `'static`, therefore the lifetime inferred by the HKT cannot be `'static`).
     ///
-    /// This enables the `Parser` to be certain that `BrandedNodeId`s with the same `'brand` as it are in-bounds
+    /// This allows the `Parser` to assume that `BrandedNodeId`s with the same `'brand` as it are in-bounds
     /// (because that parser previously checked them), which allows for unchecked indexing, as well as safe direct mutation of AST nodes
     pub(crate) fn with_tok<R>(
         &self,
@@ -246,5 +190,65 @@ impl<'brand> BrandedParser<'_, 'brand> {
     ) -> BrandedNodeId<'brand> {
         // Safety: Brand ensures all indices are in-bounds
         unsafe { self.insert_unchecked(node, span) }
+    }
+}
+
+impl<'brand> BrandedExprNode<'brand> {
+    /// Runs the given closure with a reference to a slice containing the child NodeIds of this ExprNode
+    /// (used when ensuring that provided NodeIds of an untrusted ExprNode are in-bounds if they are not provided via the unchecked API)
+    ///
+    /// Shortcuts to return `None` if a node has no children
+    fn with_children<R>(&self, cb: impl FnOnce(&[BrandedNodeId<'brand>]) -> R) -> Option<R> {
+        match self {
+            BrandedExprNode::NumberLit(_) => None,
+            BrandedExprNode::Ident(_) => None,
+            BrandedExprNode::Binary(id1, id2, _) => Some(cb(&[*id1, *id2])),
+            BrandedExprNode::Unary(id1, _) => Some(cb(&[*id1])),
+            BrandedExprNode::RangeList(range_list) => {
+                Some(if let Some(im) = &range_list.interval_marker {
+                    cb(&[*im, range_list.start, range_list.end])
+                } else {
+                    cb(&[range_list.start, range_list.end])
+                })
+            }
+            BrandedExprNode::ListLit(thin_boxed_slice) => Some(cb(thin_boxed_slice)),
+            BrandedExprNode::ListComp(thin_boxed_slice, i) => {
+                let mut v = thin_boxed_slice
+                    .iter()
+                    .map(|v| &v.1)
+                    .copied()
+                    .collect::<Vec<_>>();
+                v.push(*i);
+                Some(cb(&v))
+            }
+            BrandedExprNode::Sum { initial, end, .. } => Some(cb(&[*initial, *end])),
+            BrandedExprNode::Prod { initial, end, .. } => Some(cb(&[*initial, *end])),
+            BrandedExprNode::Integral {
+                lower,
+                upper,
+                integrand,
+            } => Some(cb(&[*lower, *upper, *integrand])),
+            BrandedExprNode::Derivative { diff } => Some(cb(&[*diff])),
+            BrandedExprNode::IntegrandOrDiff { expression, .. } => Some(cb(&[*expression])),
+        }
+    }
+    /// Removes the brand on this ExprNode, if it is present, replacing the brand lifetime with `'static`
+    pub(crate) fn unbrand_val(self) -> ExprNode {
+        // Safety: transmutes that only affect lifetime parameters are unconditionally allowed (i.e. lifetime parameters cannot cause layout instability)
+        // the 'static brand is always safe to apply because it is the one brand where the creation of a corresponding UncheckedToken<'static>
+        // is impossible due to the construction invariants on it (see Parser::with_token and Parser::with_token_mut)
+        unsafe { transmute::<BrandedExprNode<'_>, BrandedExprNode<'static>>(self) }
+    }
+    /// Removes the brand on this reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
+    pub(crate) fn unbrand_ref(&self) -> &ExprNode {
+        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
+        // cast see the above safety comments in unbrand_val above
+        unsafe { transmute::<&BrandedExprNode<'_>, &BrandedExprNode<'static>>(self) }
+    }
+    /// Removes the brand on this mutable reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
+    pub(crate) fn unbrand_mut(&mut self) -> &mut ExprNode {
+        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
+        // cast see the above safety comments in unbrand_val above
+        unsafe { transmute::<&mut BrandedExprNode<'_>, &mut BrandedExprNode<'static>>(self) }
     }
 }
