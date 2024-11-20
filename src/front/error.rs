@@ -36,8 +36,6 @@ pub enum ParseError {
     },
     #[error("unexpected token {}{}", tok.as_ref(), expected.as_ref().map(|e| format!(", expected {}", e.as_ref())).as_deref().unwrap_or(""))]
     UnexpectedToken { tok: Token, expected: Option<Token> },
-    #[error("ran out of node IDs! congrats on your multi-gigabyte desmos expression!")]
-    NodeIdExhausted,
 }
 #[derive(Debug, Diagnostic, Error)]
 

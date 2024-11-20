@@ -1,95 +1,57 @@
-use std::num::NonZeroU32;
 
 use crate::util::thin_boxed_slice::ThinBoxedSlice;
-use logos::{Span, SpannedIter};
-use string_interner::symbol::SymbolU32;
 
-use super::lexer::Token;
+use parser_internals::{BrandedNodeId, NodeId};
+use string_interner::symbol::SymbolU32;
 
 pub(crate) struct Expr {
     nodes: Vec<ExprNode>,
     root: NodeId,
 }
+pub(crate) mod parser_internals;
 
-pub(crate) struct Parser<'source> {
-    lexer: SpannedIter<'source, Token>,
-    span_stack: Vec<Span>,
-    nodes: Vec<ExprNode>,
-    node_spans: Vec<Span>,
-}
-
-mod parser_priv {
-    use std::marker::PhantomData;
-
-    use super::{NodeId, Parser};
-
-    pub(crate) struct UncheckedToken<'a>(PhantomData<&'a ()>);
-    pub(crate) struct UncheckedNodeId<'a>(NodeId, PhantomData<&'a ()>);
-
-    impl std::ops::Deref for UncheckedNodeId<'_> {
-        type Target = NodeId;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    impl<'source> Parser<'source> {
-        pub(crate) fn with_tok<R>(
-            &self,
-            func: impl for<'tok> FnOnce(UncheckedToken<'tok>, &Parser<'source>) -> R,
-        ) -> R {
-            func(UncheckedToken(PhantomData), self)
-        }
-        pub(crate) fn with_tok_mut<R>(
-            &mut self,
-            func: impl for<'tok> FnOnce(UncheckedToken<'tok>, &mut Parser<'source>) -> R,
-        ) -> R {
-            func(UncheckedToken(PhantomData), self)
-        }
-    }
-}
-impl Parser<'_> {}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ExprNode {
+pub(crate) type ExprNode = BrandedExprNode<'static>;
+pub(crate) enum BrandedExprNode<'brand> {
     NumberLit(f64),
     Ident(Ident),
-    Binary(NodeId, NodeId, BinaryOp),
-    Unary(NodeId, UnaryOp),
-    RangeList(RangeList),
-    ListLit(ThinBoxedSlice<NodeId>),
-    ListComp(ThinBoxedSlice<(Ident, NodeId)>, NodeId),
+    Binary(BrandedNodeId<'brand>, BrandedNodeId<'brand>, BinaryOp),
+    Unary(BrandedNodeId<'brand>, UnaryOp),
+    RangeList(RangeList<'brand>),
+    ListLit(ThinBoxedSlice<BrandedNodeId<'brand>>),
+    ListComp(
+        ThinBoxedSlice<(Ident, BrandedNodeId<'brand>)>,
+        BrandedNodeId<'brand>,
+    ),
     Sum {
         /// Ident of the summation variable
         var: Ident,
         /// Initial value of the summation variable
-        initial: NodeId,
+        initial: BrandedNodeId<'brand>,
         /// Final value of the summation variable
-        end: NodeId,
+        end: BrandedNodeId<'brand>,
     },
     Prod {
         /// Ident of the product variable
         var: Ident,
         /// Initial value of the summation variable
-        initial: NodeId,
+        initial: BrandedNodeId<'brand>,
         /// Final value of the summation variable
-        end: NodeId,
+        end: BrandedNodeId<'brand>,
     },
     Integral {
         /// Start bound of the integral
-        lower: NodeId,
+        lower: BrandedNodeId<'brand>,
         /// End bound of the integral
-        upper: NodeId,
-        /// NodeId to the Integrand of this integral
-        integrand: NodeId,
+        upper: BrandedNodeId<'brand>,
+        /// NodeId<'node> to the Integrand of this integral
+        integrand: BrandedNodeId<'brand>,
     },
     Derivative {
-        diff: NodeId,
+        diff: BrandedNodeId<'brand>,
     },
     IntegrandOrDiff {
         integration_or_diff_var: Ident,
-        expression: NodeId,
+        expression: BrandedNodeId<'brand>,
     },
 }
 
@@ -102,18 +64,18 @@ pub(crate) enum Value {
 /// a fixed interval until reaching the last value whose absolute value
 /// is less than or equal to the abosolute value of `end`
 #[derive(Debug, Clone)]
-pub(crate) struct RangeList {
+pub(crate) struct RangeList<'brand> {
     /// The value to start this range list at
-    start: NodeId,
+    start: BrandedNodeId<'brand>,
 
     /// Optional, a secondary value which can be used to set the interval
     /// The formula to get the interval is:
     ///
     /// `interval := interval_marker - start`
-    interval_marker: Option<NodeId>,
+    interval_marker: Option<BrandedNodeId<'brand>>,
 
     /// The value that marks the end of this range list.
-    end: NodeId,
+    end: BrandedNodeId<'brand>,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BinaryOp {
@@ -148,10 +110,5 @@ pub enum UnaryOp {
     Gamma,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Ident(SymbolU32);
-
-#[derive(Debug, Clone)]
-pub(crate) struct NodeId {
-    inner: NonZeroU32,
-}

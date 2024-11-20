@@ -34,8 +34,9 @@ pub(crate) struct EquationDef {
     rhs: Expr,
 }
 pub struct Expression {
-    // cache the latest parsed version of this expression
+    /// Cache that holds the latest parsed version of this Expression
     cache: Cell<Option<ParsedExpression>>,
+    /// holds the expression text
     backing: String,
 }
 pub struct Frontend {
