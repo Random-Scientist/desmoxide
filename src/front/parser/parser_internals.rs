@@ -59,9 +59,9 @@ impl BrandedNodeId<'_> {
             _invariant_brand: PhantomData,
         }
     }
-    /// Casts this BrandedNodeId to use the specified lifetime parameter as its brand
+    /// Casts this [`BrandedNodeId`] to use the specified lifetime parameter as its brand
     /// # Safety
-    /// Caller must ensure that the NodeId is actually valid for the applied brand (i.e. it is in-bounds for the Parser struct that it corresponds to).
+    /// Caller must ensure that the NodeId is actually valid for the applied brand (i.e. it is in-bounds for the corresponding [`Parser`] struct).
     /// `'static` is the exception to this. It is always safe to apply the `'static` brand lifetime
     #[inline]
     unsafe fn cast_to_lt<'lt>(self) -> BrandedNodeId<'lt> {
@@ -70,7 +70,7 @@ impl BrandedNodeId<'_> {
     }
 }
 
-/// BrandedParser with the `'static` brand
+/// [`BrandedParser`] with the `'static` brand
 pub(crate) type Parser<'source> = BrandedParser<'source, 'static>;
 /// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
 pub(crate) struct BrandedParser<'source, 'brand> {
@@ -89,15 +89,15 @@ pub(crate) struct BrandedParser<'source, 'brand> {
 }
 
 #[derive(Debug, Clone, Copy)]
-/// Token which lives for an invariant `'brand` lifetime, indicating that the user is working with the [`Parser`] with the same brand from within a call to `with_tok` or `with_tok_mut`
+/// Token which lives for an invariant `'brand` lifetime, indicating that the user is working with the [`Parser`] with the same brand from within a call to [`Parser::with_tok`] or [`Parser::with_tok_mut`]
 pub(crate) struct UncheckedToken<'brand>(PhantomData<fn(&'brand ()) -> &'brand ()>);
 
 impl<'source> BrandedParser<'source, '_> {
-    /// Runs a closure with a reference to the Parser and UncheckedToken that live for a higher-kinded lifetime.
+    /// Runs a closure with a reference to the [`Parser`] and [`UncheckedToken`] that live for a higher-kinded lifetime.
     /// Crucially, this lifetime *cannot* be `'static`, as the closure only knows that both values live for the duration
     /// of the closure and no longer (the closure does not run for `'static`, therefore the lifetime inferred by the HKT cannot be `'static`).
     ///
-    /// This allows the `Parser` to assume that `BrandedNodeId`s with the same `'brand` as it are in-bounds
+    /// This allows the [`Parser`] to assume that [`BrandedNodeId`]s with the same `'brand` as it are in-bounds
     /// (because that parser previously checked them), which allows for unchecked indexing, as well as safe direct mutation of AST nodes
     pub(crate) fn with_tok<R>(
         &self,
@@ -112,7 +112,7 @@ impl<'source> BrandedParser<'source, '_> {
     ) -> R {
         func(UncheckedToken(PhantomData), self)
     }
-    /// Get a reference to a node from an id, panicing if the NodeID points out of bounds
+    /// Get a reference to a node from an id, panicing if `id` indexes out of bounds
     #[inline]
     pub(crate) fn node(&self, id: BrandedNodeId<'_>) -> &ExprNode {
         &self.nodes[id.as_idx()]
@@ -194,10 +194,10 @@ impl<'brand> BrandedParser<'_, 'brand> {
 }
 
 impl<'brand> BrandedExprNode<'brand> {
-    /// Runs the given closure with a reference to a slice containing the child NodeIds of this ExprNode
-    /// (used when ensuring that provided NodeIds of an untrusted ExprNode are in-bounds if they are not provided via the unchecked API)
+    /// Runs the given closure with a reference to a slice containing the child NodeIds of this [`ExprNode`]
+    /// (used when ensuring that provided [`NodeId`]s of an untrusted [`ExprNode`] are in-bounds if they are not provided via the unchecked API)
     ///
-    /// Shortcuts to return `None` if a node has no children
+    /// Shortcuts to return [`None`] if a node has no children
     fn with_children<R>(&self, cb: impl FnOnce(&[BrandedNodeId<'brand>]) -> R) -> Option<R> {
         match self {
             BrandedExprNode::NumberLit(_) => None,
@@ -232,20 +232,20 @@ impl<'brand> BrandedExprNode<'brand> {
             BrandedExprNode::IntegrandOrDiff { expression, .. } => Some(cb(&[*expression])),
         }
     }
-    /// Removes the brand on this ExprNode, if it is present, replacing the brand lifetime with `'static`
+    /// Removes the brand on this [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
     pub(crate) fn unbrand_val(self) -> ExprNode {
         // Safety: transmutes that only affect lifetime parameters are unconditionally allowed (i.e. lifetime parameters cannot cause layout instability)
         // the 'static brand is always safe to apply because it is the one brand where the creation of a corresponding UncheckedToken<'static>
         // is impossible due to the construction invariants on it (see Parser::with_token and Parser::with_token_mut)
         unsafe { transmute::<BrandedExprNode<'_>, BrandedExprNode<'static>>(self) }
     }
-    /// Removes the brand on this reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
+    /// Removes the brand on this reference to an [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
     pub(crate) fn unbrand_ref(&self) -> &ExprNode {
         // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
         // cast see the above safety comments in unbrand_val above
         unsafe { transmute::<&BrandedExprNode<'_>, &BrandedExprNode<'static>>(self) }
     }
-    /// Removes the brand on this mutable reference to an ExprNode, if it is present, replacing the brand lifetime with `'static`
+    /// Removes the brand on this mutable reference to an [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
     pub(crate) fn unbrand_mut(&mut self) -> &mut ExprNode {
         // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
         // cast see the above safety comments in unbrand_val above
