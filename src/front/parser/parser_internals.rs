@@ -143,6 +143,20 @@ impl<'brand, Lex> BrandedParser<'_, 'brand, Lex> {
             )
         }
     }
+    #[inline]
+    pub(crate) fn node_unchecked_mut(
+        &mut self,
+        _tok: UncheckedToken<'brand>,
+        id: BrandedNodeId<'brand>,
+    ) -> &mut BrandedExprNode<'brand> {
+        // Safety: id is guaranteed to be in-bounds due to branding, reference transmute is allowed because it only affects lifetime parameters
+        // the ExprNode is safe to mutate through this reference because it requires any mutated NodeIds to have the same 'brand
+        unsafe {
+            transmute::<&mut BrandedExprNode<'static>, &mut BrandedExprNode<'brand>>(
+                self.nodes.get_unchecked_mut(id.as_idx()),
+            )
+        }
+    }
     /// Inserts a new [`ExprNode`] (along with its corresponding [`Span`]), skipping validation because the brand guarantees
     ///  that all [`NodeId`]s within the new [`ExprNode`] are in-bounds (see above)
     #[inline]
@@ -179,6 +193,7 @@ impl BrandedNodeId<'_> {
     /// Converts the inner value (a NonZeroU32 to allow for niche opt) to a usable index for zero-indexed arrays
     #[inline]
     pub(crate) fn as_idx(self) -> usize {
+        // Safety: self.inner is a non-zero unsigned positive integer, subtracting one from it will never underflow
         unsafe { self.inner.get().unchecked_sub(1) as usize }
     }
     #[inline]

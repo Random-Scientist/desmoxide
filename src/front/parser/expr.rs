@@ -172,12 +172,6 @@ impl<'brand> BrandedExprNode<'brand> {
         // cast see the above safety comments in unbrand_val above
         unsafe { mem::transmute::<&BrandedExprNode<'_>, &BrandedExprNode<'static>>(self) }
     }
-    /// Removes the brand on this mutable reference to an [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_mut(&mut self) -> &mut ExprNode {
-        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
-        // cast see the above safety comments in unbrand_val above
-        unsafe { mem::transmute::<&mut BrandedExprNode<'_>, &mut BrandedExprNode<'static>>(self) }
-    }
 }
 
 #[derive(Debug, Clone)]
