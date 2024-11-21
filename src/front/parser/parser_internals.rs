@@ -1,10 +1,161 @@
-use std::{marker::PhantomData, mem::transmute, num::NonZeroU32};
+use std::{iter::Peekable, marker::PhantomData, mem::transmute, num::NonZeroU32};
 
-use logos::{Span, SpannedIter};
+use logos::{Logos, Span};
 
 use crate::front::lexer::Token;
 
 use super::{BrandedExprNode, ExprNode};
+
+pub(crate) trait GenericSpanIter<'source>:
+    Iterator<Item = (Result<Token, <Token as Logos<'source>>::Error>, Span)>
+{
+    fn peek(&mut self) -> Option<&Self::Item>;
+}
+impl<'source, T: Iterator<Item = (Result<Token, <Token as Logos<'source>>::Error>, Span)>>
+    GenericSpanIter<'source> for Peekable<T>
+{
+    #[inline]
+    fn peek(&mut self) -> Option<&Self::Item> {
+        self.peek()
+    }
+}
+
+/// [`BrandedParser`] with the `'static` brand
+pub(crate) type Parser<'source, T> = BrandedParser<'source, 'static, T>;
+/// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
+pub(crate) struct BrandedParser<'source, 'brand, Iter> {
+    /// Stream of [`Token`]s to parse
+    pub(super) lexer: Iter,
+    /// Contains the covered [`Span`]s of the parsing carried out by various recursion levels
+    pub(super) span_stack: Vec<Span>,
+    /// Contains a list of [`ExprNode`]s which refer to each other to form a tree via [`NodeId`]s.
+    /// # Invariant
+    /// All [`NodeId`]s contained within [`ExprNode`]s in this vec have indices which lie within 0..nodes.len() (i.e. it is safe to do unchecked indexing with them)
+    pub(super) nodes: Vec<ExprNode>,
+    /// A parallel list of [`Span`]s, each containing the corresponding [`Span`] of the ExprNode at the same index in `nodes`
+    pub(super) node_spans: Vec<Span>,
+    /// Invariant phantom lifetime, used to track the brand
+    _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
+    _covariant_source: PhantomData<fn(&'source ())>,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Token which lives for an invariant `'brand` lifetime, indicating that the user is working with the [`Parser`] with the same brand from within a call to [`Parser::with_tok`] or [`Parser::with_tok_mut`]
+pub(crate) struct UncheckedToken<'brand>(PhantomData<fn(&'brand ()) -> &'brand ()>);
+
+impl<'source, Lex> BrandedParser<'source, '_, Lex> {
+    pub(crate) fn new_with(val: Lex) -> BrandedParser<'source, 'static, Lex> {
+        BrandedParser {
+            lexer: val,
+            span_stack: Vec::new(),
+            nodes: Vec::new(),
+            node_spans: Vec::new(),
+            _invariant_brand: PhantomData,
+            _covariant_source: PhantomData,
+        }
+    }
+    /// Runs a closure with a reference to the [`Parser`] and [`UncheckedToken`] that live for a higher-kinded lifetime.
+    /// Crucially, this lifetime *cannot* be `'static`, as the closure only knows that both values live for the duration
+    /// of the closure and no longer (the closure does not run for `'static`, therefore the lifetime inferred by the HKT cannot be `'static`).
+    ///
+    /// This allows the [`Parser`] to assume that [`BrandedNodeId`]s with the same `'brand` as it are in-bounds
+    /// (because that parser previously checked them), which allows for unchecked indexing, as well as safe direct mutation of AST nodes
+    pub(crate) fn with_tok<R>(
+        &self,
+        func: impl for<'brand> FnOnce(UncheckedToken<'brand>, &BrandedParser<'source, 'brand, Lex>) -> R,
+    ) -> R {
+        func(UncheckedToken(PhantomData), self)
+    }
+    /// [`Parser::with_tok`] but with a mutable reference to the Parser
+    pub(crate) fn with_tok_mut<R>(
+        &mut self,
+        func: impl for<'brand> FnOnce(
+            UncheckedToken<'brand>,
+            &mut BrandedParser<'source, 'brand, Lex>,
+        ) -> R,
+    ) -> R {
+        func(UncheckedToken(PhantomData), self)
+    }
+    /// Get a reference to a node from an id, panicing if `id` indexes out of bounds
+    #[inline]
+    pub(crate) fn node(&self, id: BrandedNodeId<'_>) -> &ExprNode {
+        &self.nodes[id.as_idx()]
+    }
+
+    /// Directly inserts a [`BrandedExprNode`] (as well as its accompanying [`Span`]) into this parser, returning
+    /// a [`BrandedNodeId`] with the brand of the node that points to it.
+    /// # Safety:
+    /// improper use can violate [`Parser`]'s internal invariants.
+    ///
+    /// [`Parser`] assumes that all [`NodeId`]s contained in [`ExprNode`]s in its internal node array point to valid indices in the array.
+    /// This function does not ensure that the provided [`ExprNode`] upholds this property, directly appending it to the array
+    #[inline]
+    pub(crate) unsafe fn insert_unchecked<'brand>(
+        &mut self,
+        node: BrandedExprNode<'brand>,
+        span: Span,
+    ) -> BrandedNodeId<'brand> {
+        self.node_spans.push(span);
+        let new_id = BrandedNodeId::with_lt::<'brand>(self.nodes.len());
+        self.nodes.push(node.unbrand_val());
+        new_id
+    }
+    pub(crate) fn insert(&mut self, node: BrandedExprNode<'_>, span: Span) -> NodeId {
+        let u = node.unbrand_val();
+        let len = self.nodes.len();
+        if u.with_children(|children| children.iter().any(|v| v.as_idx() >= len))
+            .is_some_and(|v| v)
+        {
+            panic!("AST node referred to an out-of-bounds child node!");
+        }
+        // Safety: child nodes of the AST node passed in were checked to be in-bounds
+        unsafe { self.insert_unchecked(u, span) }
+    }
+}
+impl<'brand, Lex> BrandedParser<'_, 'brand, Lex> {
+    /// Checks whether a given [`NodeId`] is in-bounds for this parser, panicing on failiure. If the provided [`NodeId`] is in-bounds,
+    /// it returns a new [`NodeId`] with the parser and token's `'brand`
+    #[inline]
+    pub(crate) fn check_id(
+        &self,
+        _tok: UncheckedToken<'brand>,
+        id: BrandedNodeId<'_>,
+    ) -> BrandedNodeId<'brand> {
+        assert!(
+            (id.inner.get() as usize) <= self.nodes.len(),
+            "expected NodeId to be in-bounds!"
+        );
+        // Safety: this is safe because UncheckedToken ensures this index can only be used for the duration of the corresponding UncheckedToken's lifetime
+        unsafe { id.cast_to_lt::<'brand>() }
+    }
+    /// Gets a shared reference to an [`ExprNode`] with unchecked indexing. This is sound because a [`NodeId`]`<'brand>`
+    /// cannot be forged for reasons discussed in other parts of the documentation
+    #[inline]
+    pub(crate) fn node_unchecked(
+        &self,
+        _tok: UncheckedToken<'brand>,
+        id: BrandedNodeId<'brand>,
+    ) -> &BrandedExprNode<'brand> {
+        // Safety: id is guaranteed to be in-bounds due to branding, reference transmute is allowed because it only affects lifetime parameters
+        unsafe {
+            transmute::<&BrandedExprNode<'static>, &BrandedExprNode<'brand>>(
+                self.nodes.get_unchecked(id.as_idx()),
+            )
+        }
+    }
+    /// Inserts a new [`ExprNode`] (along with its corresponding [`Span`]), skipping validation because the brand guarantees
+    ///  that all [`NodeId`]s within the new [`ExprNode`] are in-bounds (see above)
+    #[inline]
+    pub(crate) fn insert_with_token(
+        &mut self,
+        _tok: UncheckedToken<'brand>,
+        node: BrandedExprNode<'brand>,
+        span: Span,
+    ) -> BrandedNodeId<'brand> {
+        // Safety: Brand ensures all indices are in-bounds
+        unsafe { self.insert_unchecked(node, span) }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -67,128 +218,5 @@ impl BrandedNodeId<'_> {
     unsafe fn cast_to_lt<'lt>(self) -> BrandedNodeId<'lt> {
         // Safety: transmute only affects lifetimes
         unsafe { transmute(self) }
-    }
-}
-
-/// [`BrandedParser`] with the `'static` brand
-pub(crate) type Parser<'source> = BrandedParser<'source, 'static>;
-/// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
-pub(crate) struct BrandedParser<'source, 'brand> {
-    /// Stream of [`Token`]s to parse
-    lexer: SpannedIter<'source, Token>,
-    /// Contains the covered [`Span`]s of the parsing carried out by various recursion levels
-    span_stack: Vec<Span>,
-    /// Contains a list of [`ExprNode`]s which refer to each other to form a tree via [`NodeId`]s.
-    /// # Invariant
-    /// All [`NodeId`]s contained within [`ExprNode`]s in this vec have indices which fall on 0..nodes.len() (i.e. it is safe to do unchecked indexing with them)
-    nodes: Vec<ExprNode>,
-    /// A parallel list of [`Span`]s, each containing the corresponding [`Span`] of the ExprNode at the same index in `nodes`
-    node_spans: Vec<Span>,
-    /// Invariant phantom lifetime, used to track the brand
-    _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
-}
-
-#[derive(Debug, Clone, Copy)]
-/// Token which lives for an invariant `'brand` lifetime, indicating that the user is working with the [`Parser`] with the same brand from within a call to [`Parser::with_tok`] or [`Parser::with_tok_mut`]
-pub(crate) struct UncheckedToken<'brand>(PhantomData<fn(&'brand ()) -> &'brand ()>);
-
-impl<'source> BrandedParser<'source, '_> {
-    /// Runs a closure with a reference to the [`Parser`] and [`UncheckedToken`] that live for a higher-kinded lifetime.
-    /// Crucially, this lifetime *cannot* be `'static`, as the closure only knows that both values live for the duration
-    /// of the closure and no longer (the closure does not run for `'static`, therefore the lifetime inferred by the HKT cannot be `'static`).
-    ///
-    /// This allows the [`Parser`] to assume that [`BrandedNodeId`]s with the same `'brand` as it are in-bounds
-    /// (because that parser previously checked them), which allows for unchecked indexing, as well as safe direct mutation of AST nodes
-    pub(crate) fn with_tok<R>(
-        &self,
-        func: impl for<'brand> FnOnce(UncheckedToken<'brand>, &BrandedParser<'source, 'brand>) -> R,
-    ) -> R {
-        func(UncheckedToken(PhantomData), self)
-    }
-    /// [`Parser::with_tok`] but with a mutable reference to the Parser
-    pub(crate) fn with_tok_mut<R>(
-        &mut self,
-        func: impl for<'brand> FnOnce(UncheckedToken<'brand>, &mut BrandedParser<'source, 'brand>) -> R,
-    ) -> R {
-        func(UncheckedToken(PhantomData), self)
-    }
-    /// Get a reference to a node from an id, panicing if `id` indexes out of bounds
-    #[inline]
-    pub(crate) fn node(&self, id: BrandedNodeId<'_>) -> &ExprNode {
-        &self.nodes[id.as_idx()]
-    }
-
-    /// Directly inserts a [`BrandedExprNode`] (as well as its accompanying [`Span`]) into this parser, returning
-    /// a [`BrandedNodeId`] with the brand of the node that points to it.
-    /// # Safety:
-    /// improper use can violate [`Parser`]'s internal invariants.
-    ///
-    /// [`Parser`] assumes that all [`NodeId`]s contained in [`ExprNode`]s in its internal node array point to valid indices in the array.
-    /// This function does not ensure that the provided [`ExprNode`] upholds this property, directly appending it to the array
-    #[inline]
-    pub(crate) unsafe fn insert_unchecked<'brand>(
-        &mut self,
-        node: BrandedExprNode<'brand>,
-        span: Span,
-    ) -> BrandedNodeId<'brand> {
-        self.node_spans.push(span);
-        let new_id = BrandedNodeId::with_lt::<'brand>(self.nodes.len());
-        self.nodes.push(node.unbrand_val());
-        new_id
-    }
-    pub(crate) fn insert(&mut self, node: BrandedExprNode<'_>, span: Span) -> NodeId {
-        let u = node.unbrand_val();
-        let len = self.nodes.len();
-        if u.with_children(|children| children.iter().any(|v| v.as_idx() >= len))
-            .is_some_and(|v| v)
-        {
-            panic!("AST node referred to an out-of-bounds child node!");
-        }
-        // Safety: child nodes of the AST node passed in were checked to be in-bounds
-        unsafe { self.insert_unchecked(u, span) }
-    }
-}
-impl<'brand> BrandedParser<'_, 'brand> {
-    /// Checks whether a given [`NodeId`] is in-bounds for this parser, panicing on failiure. If the provided [`NodeId`] is in-bounds,
-    /// it returns a new [`NodeId`] with the parser and token's `'brand`
-    #[inline]
-    pub(crate) fn check_id(
-        &self,
-        _tok: UncheckedToken<'brand>,
-        id: BrandedNodeId<'_>,
-    ) -> BrandedNodeId<'brand> {
-        assert!(
-            (id.inner.get() as usize) <= self.nodes.len(),
-            "expected NodeId to be in-bounds!"
-        );
-        // Safety: this is safe because UncheckedToken ensures this index can only be used for the duration of the corresponding UncheckedToken's lifetime
-        unsafe { id.cast_to_lt::<'brand>() }
-    }
-    /// Gets a shared reference to an [`ExprNode`] with unchecked indexing. This is sound because a [`NodeId`]`<'brand>`
-    /// cannot be forged for reasons discussed in other parts of the documentation
-    #[inline]
-    pub(crate) fn node_unchecked(
-        &self,
-        _tok: UncheckedToken<'brand>,
-        id: BrandedNodeId<'brand>,
-    ) -> &BrandedExprNode<'brand> {
-        // Safety: id is guaranteed to be in-bounds due to branding, reference transmute is allowed because it only affects lifetime parameters
-        unsafe {
-            transmute::<&BrandedExprNode<'static>, &BrandedExprNode<'brand>>(
-                self.nodes.get_unchecked(id.as_idx()),
-            )
-        }
-    }
-    /// Inserts a new [`ExprNode`] (along with its corresponding [`Span`]), skipping validation because the brand guarantees
-    ///  that all [`NodeId`]s within the new [`ExprNode`] are in-bounds (see above)
-    #[inline]
-    pub(crate) fn insert_with_token(
-        &mut self,
-        _tok: UncheckedToken<'brand>,
-        node: BrandedExprNode<'brand>,
-        span: Span,
-    ) -> BrandedNodeId<'brand> {
-        // Safety: Brand ensures all indices are in-bounds
-        unsafe { self.insert_unchecked(node, span) }
     }
 }

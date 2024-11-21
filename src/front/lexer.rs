@@ -1,61 +1,22 @@
-use logos::{Filter, Lexer, SpannedIter};
-use string_interner::{backend::BucketBackend, symbol::SymbolU32, StringInterner};
+use logos::Lexer;
+
 use strum::AsRefStr;
 
-use super::Ident;
-
-pub(crate) struct LexerExtras {
-    // lexer takes ownership of the corresponding Frontend's interner for the duration of
-    // lexing (i.e. only one expression may be lexed by a Frontend at a time)
-    intern: StringInterner<BucketBackend<SymbolU32>>,
-}
+use super::{Ident, Interner};
 
 #[inline]
 fn ident(lex: &mut Lexer<Token>) -> Ident {
     let slice = lex.slice();
-    lex.extras.intern.get_or_intern(slice).into()
+    lex.extras.get_or_intern(slice).into()
 }
-// #[inline]
-// fn ident_from_d_dx(lex: &mut Lexer<Token>) -> Ident {
-//     let mut slice = lex.slice();
-//     slice = &slice[9..(slice.len() - 1)];
-//     lex.extras.intern.get_or_intern(slice).into()
-// }
-// #[inline]
-// fn handle_d(lex: &mut Lexer<Token>) -> Filter<Token> {
-//     let source = lex.source();
 
-//     let start = lex.span().start;
-
-//     if start > 1 && source.get((start - 2)..start).is_some_and(|c| c == "}{") {
-//         let mut group_ctr = 0;
-//         for i in source[0..(start - 1)].rsplit(r"\frac") {
-//             let mut iter = i.chars().rev();
-//             loop {
-//                 match iter.next() {
-//                     Some('}') => {
-//                         group_ctr += 1;
-//                     }
-//                     Some('{') => {
-//                         group_ctr -= 1;
-//                     }
-//                     Some(_) => {}
-//                     None => {
-//                         if group_ctr == 0 {
-//                             return Filter::Emit(Token::D);
-//                         }
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     Filter::Emit(Token::Ident(lex.extras.intern.get_or_intern_static("d")))
-// }
 #[non_exhaustive]
 #[derive(logos::Logos, Debug, PartialEq, Clone, Copy, AsRefStr)]
-//#[logos(skip r"[ \t\n\f]+|\\+left|\\+right" )]
 #[logos(skip r"[ \t\n\f]+")]
-#[logos(extras = LexerExtras)]
+// this is a rather scuffed hack because you can't pass in an Extras type with an arbitrary lifetime.
+// it just so happens that the 'source lifetime is good enough for our usage, so we use that
+// (even though we really shouldn't be able to name it for hygiene reasons)
+#[logos(extras = &'s mut Interner)]
 pub(crate) enum Token {
     #[regex(r"\d+\.[0-9]+", |lex| {lex.slice().parse().ok()})]
     Literal(f64),
@@ -182,8 +143,4 @@ pub(crate) enum Token {
     #[token(r"\right", callback = logos::skip, priority = 10000)]
     #[token(r"\\right", callback = logos::skip, priority = 10000)]
     Invalid,
-}
-pub struct SpannedTokenIter<'source> {
-    inner: SpannedIter<'source, Token>,
-    fracs: u32,
 }

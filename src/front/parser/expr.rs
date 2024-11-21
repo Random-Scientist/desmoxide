@@ -6,12 +6,14 @@ use crate::util::thin_boxed_slice::ThinBoxedSlice;
 
 use super::{BrandedNodeId, NodeId};
 
+#[derive(Debug, Clone)]
 pub(crate) struct Expr {
     nodes: Vec<ExprNode>,
     root: NodeId,
 }
 
 pub(crate) type ExprNode = BrandedExprNode<'static>;
+#[derive(Debug, Clone)]
 pub(crate) enum BrandedExprNode<'brand> {
     /// a numeric literal
     /// ## Examples
