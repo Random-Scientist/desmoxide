@@ -1,6 +1,7 @@
 use std::{cell::Cell, num::NonZeroU32};
 
 use parser::{Expr, Ident};
+use string_interner::{backend::BucketBackend, symbol::SymbolU32, StringInterner};
 
 use crate::middle::Comparison;
 
@@ -41,4 +42,5 @@ pub struct Expression {
 }
 pub struct Frontend {
     exprs: Vec<Expression>,
+    intern: StringInterner<BucketBackend, SymbolU32>,
 }
