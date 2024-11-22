@@ -4,9 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-allocator-api2 = "0.2.20"
+# Lexer generator
 logos = "0.14.2"
-miette = { version = "7.2.0", features = ["fancy"] }
+# custom miette fork for diagnostics with some changes the way SpanContents work
+miette = { git = "https://github.com/The-Minecraft-Scientist/miette.git", branch = "possibly_owned_span_data", features = [
+    "fancy",
+] }
+# replace &mut T with value derived from itself
+replace_with = "0.1.7"
+# used to intern Idents in the frontend
 string-interner = "0.18.0"
+# used to generate a `AsRef<str>` impls to get the name of an enum variant
 strum = { version = "0.26.3", features = ["derive"] }
+# used to generate error types
 thiserror = "2.0.3"

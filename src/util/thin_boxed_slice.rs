@@ -7,18 +7,15 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::slice;
 
-use allocator_api2::alloc::{self, Allocator, Global};
-
 // from: https://github.com/seekstar/thin-boxed-slice/blob/main/src/lib.rs (with some cleanup and minor modifications)
 
 #[derive(Debug)]
-pub struct ThinBoxedSlice<T, A: Allocator = Global> {
+pub struct ThinBoxedSlice<T> {
     p: NonNull<u8>,
-    allocator: A,
     phantom: PhantomData<T>,
 }
 
-impl<T, A: Allocator> ThinBoxedSlice<T, A> {
+impl<T> ThinBoxedSlice<T> {
     const fn array_offset() -> usize {
         let align = align_of::<T>();
         let misalign = size_of::<usize>() % align;
@@ -39,13 +36,12 @@ impl<T, A: Allocator> ThinBoxedSlice<T, A> {
 }
 
 impl<T: Clone, A: Allocator> ThinBoxedSlice<T, A> {
-    pub fn new_in(s: &[T], allocator: A) -> Self {
+    pub fn new(s: &[T]) -> Self {
         let layout = Self::layout(s.len());
         unsafe {
-            let p = allocator.allocate(layout).unwrap().cast::<u8>();
+            let p = NonNull::new(alloc::alloc(layout)).unwrap();
             let ret = Self {
                 p,
-                allocator,
                 phantom: PhantomData,
             };
 
@@ -64,58 +60,58 @@ impl<T: Clone, A: Allocator> ThinBoxedSlice<T, A> {
 impl<T, A: Allocator> Drop for ThinBoxedSlice<T, A> {
     fn drop(&mut self) {
         unsafe {
-            self.allocator.deallocate(self.p, Self::layout(self.len()));
+            alloc::dealloc(self.p, Self::layout(self.len()));
         }
     }
 }
 
-impl<T: Clone, A: Allocator + Default> From<&[T]> for ThinBoxedSlice<T, A> {
+impl<T: Clone> From<&[T]> for ThinBoxedSlice<T, A> {
     fn from(value: &[T]) -> Self {
-        Self::new_in(value, A::default())
+        Self::new(value)
     }
 }
 
-impl<T: Clone, A: Allocator + Default, const N: usize> From<&[T; N]> for ThinBoxedSlice<T, A> {
+impl<T: Clone, const N: usize> From<&[T; N]> for ThinBoxedSlice<T, A> {
     fn from(value: &[T; N]) -> Self {
         Self::from(value.as_slice())
     }
 }
 
-impl<T, A: Allocator> Deref for ThinBoxedSlice<T, A> {
+impl<T> Deref for ThinBoxedSlice<T> {
     type Target = [T];
     fn deref(&self) -> &Self::Target {
         unsafe { slice::from_raw_parts(self.array_ptr(), self.len()) }
     }
 }
 
-impl<T, A: Allocator> DerefMut for ThinBoxedSlice<T, A> {
+impl<T> DerefMut for ThinBoxedSlice<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { slice::from_raw_parts_mut(self.array_ptr(), self.len()) }
     }
 }
 
-impl<T, A: Allocator> Borrow<[T]> for ThinBoxedSlice<T, A> {
+impl<T> Borrow<[T]> for ThinBoxedSlice<T> {
     fn borrow(&self) -> &[T] {
         self.deref()
     }
 }
 
-impl<T: PartialEq, A: Allocator> PartialEq for ThinBoxedSlice<T, A> {
+impl<T: PartialEq> PartialEq for ThinBoxedSlice<T> {
     fn eq(&self, other: &Self) -> bool {
         self.deref() == other.deref()
     }
 }
 
-impl<T: PartialEq, A: Allocator> Eq for ThinBoxedSlice<T, A> {
+impl<T: PartialEq> Eq for ThinBoxedSlice<T> {
     fn assert_receiver_is_total_eq(&self) {}
 }
 
-impl<T: Hash, A: Allocator> Hash for ThinBoxedSlice<T, A> {
+impl<T: Hash> Hash for ThinBoxedSlice<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.deref().hash(state);
     }
 }
-impl<T: Clone, A: Allocator + Default> Clone for ThinBoxedSlice<T, A> {
+impl<T: Clone + Default> Clone for ThinBoxedSlice<T> {
     fn clone(&self) -> Self {
         self.deref().into()
     }
