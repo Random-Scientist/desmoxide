@@ -1,6 +1,9 @@
+use std::str::FromStr;
+
 use logos::Lexer;
 
 use strum::AsRefStr;
+use thiserror::Error;
 
 use super::{Ident, Interner};
 
@@ -8,6 +11,14 @@ use super::{Ident, Interner};
 fn ident(lex: &mut Lexer<Token>) -> Ident {
     let slice = lex.slice();
     lex.extras.get_or_intern(slice).into()
+}
+#[derive(Error, Debug, PartialEq, Clone, Default)]
+pub enum LexError {
+    #[error(transparent)]
+    NumberParseError(<f64 as FromStr>::Err),
+    #[default]
+    #[error("failed to lex token")]
+    LexError,
 }
 
 #[non_exhaustive]
@@ -17,8 +28,9 @@ fn ident(lex: &mut Lexer<Token>) -> Ident {
 // it just so happens that the 'source lifetime is good enough for our usage, so we use that
 // (even though we really shouldn't be able to name it for hygiene reasons)
 #[logos(extras = &'s mut Interner)]
+#[logos(error = LexError)]
 pub(crate) enum Token {
-    #[regex(r"\d+\.[0-9]+", |lex| {lex.slice().parse().ok()})]
+    #[regex(r"\d+\.[0-9]+", |lex| {lex.slice().parse().map_err(|e: <f64 as FromStr>::Err| LexError::NumberParseError(e))})]
     Literal(f64),
 
     // Variable name in the form "v" (single letter) or "v_{blah}"

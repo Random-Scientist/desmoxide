@@ -21,6 +21,8 @@ pub(crate) fn parse_expression(
     lex: Lexer<'_, Token>,
 ) -> (Interner, Result<ParsedExpression, ParseError>) {
     let spanned_iter = lex.spanned().restartable();
+    loop {}
+
     let p = Parser::new_with(spanned_iter);
     todo!();
 }

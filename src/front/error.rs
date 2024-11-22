@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use logos::{Logos, Span};
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
@@ -13,29 +14,43 @@ pub struct CompileError {
     #[label("here")]
     location: SourceSpan,
 
+    #[source]
     #[diagnostic_source]
     error: FrontendError,
 }
 
 #[derive(Debug, Diagnostic, Error)]
 pub enum FrontendError {
+    #[error(transparent)]
     #[diagnostic(transparent)]
-    #[error("error during parsing")]
     ParseError(#[from] ParseError),
 
+    #[error(transparent)]
     #[diagnostic(transparent)]
-    #[error("error during lowering")]
     LoweringError(#[from] LoweringError),
+}
+impl FrontendError {
+    pub(crate) fn with_span(self, span: Span) -> CompileError {
+        CompileError {
+            location: SourceSpan::new(span.start.into(), span.end - span.start),
+            error: self,
+        }
+    }
 }
 #[derive(Debug, Diagnostic, Error)]
 pub enum ParseError {
-    #[error("expected a {}, got {}", expected_sep_name, found_sep_name)]
-    MismatchedSeparator {
-        expected_sep_name: &'static str,
-        found_sep_name: &'static str,
-    },
-    #[error("unexpected token {}{}", tok.as_ref(), expected.as_ref().map(|e| format!(", expected {}", e.as_ref())).as_deref().unwrap_or(""))]
+    #[error("{}got unexpected token {}",
+        expected.as_ref().map(|e| format!("expected token {}, ", e.as_ref())).as_deref().unwrap_or(""), 
+        tok.as_ref(),
+    )]
     UnexpectedToken { tok: Token, expected: Option<Token> },
+    #[error("Lexer error")]
+    LexError {
+        #[source]
+        err: <Token as Logos<'static>>::Error,
+        #[label("while attempting to lex token here")]
+        span: SourceSpan,
+    },
 }
 #[derive(Debug, Diagnostic, Error)]
 

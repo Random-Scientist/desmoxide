@@ -2,7 +2,7 @@ use std::mem;
 
 use string_interner::symbol::SymbolU32;
 
-use crate::util::thin_boxed_slice::ThinBoxedSlice;
+use crate::{middle::Comparison, util::thin_boxed_slice::ThinBoxedSlice};
 
 use super::{BrandedNodeId, NodeId};
 
@@ -235,4 +235,28 @@ impl From<SymbolU32> for Ident {
     fn from(value: SymbolU32) -> Self {
         Self(value)
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ParsedExpression {
+    Var(VariableDefOrExplicit),
+    Func(FunctionDef),
+    Eq(EquationDef),
+}
+#[derive(Clone, Debug)]
+pub(crate) struct VariableDefOrExplicit {
+    name: Ident,
+    value: Expr,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct FunctionDef {
+    name: Ident,
+    parameters: Box<[Ident]>,
+    body: Expr,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct EquationDef {
+    lhs: Expr,
+    comparison: Comparison,
+    rhs: Expr,
 }
