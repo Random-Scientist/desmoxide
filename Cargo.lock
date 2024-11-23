@@ -18,6 +18,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 
 [[package]]
+name = "arc-swap"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
+
+[[package]]
 name = "backtrace"
 version = "0.3.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,6 +69,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 name = "desmoxide"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "logos",
  "miette",
  "replace_with",
@@ -180,7 +187,7 @@ checksum = "78ca9ab1a0babb1e7d5695e3530886289c18cf2f87ec19a575a0abdce112e3a3"
 [[package]]
 name = "miette"
 version = "7.2.0"
-source = "git+https://github.com/The-Minecraft-Scientist/miette.git?branch=possibly_owned_span_data#f40ea26aef725ae45abb1287fa733d57eb24d547"
+source = "git+https://github.com/The-Minecraft-Scientist/miette.git?branch=possibly_owned_span_data#d9897b47e3fcc87084e1f97c2f174fcf78c12910"
 dependencies = [
  "backtrace",
  "backtrace-ext",
@@ -199,7 +206,7 @@ dependencies = [
 [[package]]
 name = "miette-derive"
 version = "7.2.0"
-source = "git+https://github.com/The-Minecraft-Scientist/miette.git?branch=possibly_owned_span_data#f40ea26aef725ae45abb1287fa733d57eb24d547"
+source = "git+https://github.com/The-Minecraft-Scientist/miette.git?branch=possibly_owned_span_data#d9897b47e3fcc87084e1f97c2f174fcf78c12910"
 dependencies = [
  "proc-macro2",
  "quote",

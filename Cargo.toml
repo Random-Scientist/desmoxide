@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+arc-swap = "1.7.1"
 # Lexer generator
 logos = "0.14.2"
 # custom miette fork for diagnostics with some changes the way SpanContents work
