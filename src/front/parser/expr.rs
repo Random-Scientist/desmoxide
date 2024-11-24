@@ -2,7 +2,13 @@ use std::mem;
 
 use string_interner::symbol::SymbolU32;
 
-use crate::{middle::Comparison, util::thin_boxed_slice::ThinBoxedSlice};
+use crate::{
+    middle::Comparison,
+    util::{
+        branded::{Branded, CheckByChildIndices, Freeze, HasInvariantLifetime},
+        thin_boxed_slice::ThinBoxedSlice,
+    },
+};
 
 use super::{BrandedNodeId, NodeId};
 
@@ -115,11 +121,27 @@ pub(crate) enum BrandedExprNode<'brand> {
         expression: BrandedNodeId<'brand>,
     },
 }
+// Safety: 'brand is required to be invariant by BrandedNodeId
+unsafe impl<'b> HasInvariantLifetime<'b> for BrandedExprNode<'b> {
+    type Downcast<'downcast> = BrandedExprNode<'downcast>;
+}
+// Safety: ExprNode is not interior-mutable
+unsafe impl Freeze for BrandedExprNode<'_> {}
+impl Branded for BrandedExprNode<'_> {}
+
+unsafe impl<'a> CheckByChildIndices<'a> for BrandedExprNode<'a> {
+    type Index = BrandedNodeId<'a>;
+
+    fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R> {
+        self.with_children(f)
+    }
+}
+
 impl<'brand> BrandedExprNode<'brand> {
     /// Runs the given closure with a reference to a slice containing the child NodeIds of this [`ExprNode`]
     /// (used when ensuring that provided [`NodeId`]s of an untrusted [`ExprNode`] are in-bounds if they are not provided via the unchecked API)
     ///
-    /// Short-circuits and returns [`None`] if a node has no children
+    /// Short-circuits by returning [`None`] if a node has no children
     pub(crate) fn with_children<R>(
         &self,
         cb: impl FnOnce(&[BrandedNodeId<'brand>]) -> R,

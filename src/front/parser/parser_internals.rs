@@ -58,34 +58,7 @@ impl<'source, Lex> BrandedParser<'source, '_, Lex> {
             _invariant_brand: PhantomData,
         }
     }
-    /// Runs a closure with a reference to the [`Parser`] and [`UncheckedToken`] that live for a higher-kinded lifetime.
-    /// Crucially, this lifetime *cannot* be `'static`, as the closure only knows that both values live for the duration
-    /// of the closure and no longer (the closure does not run for `'static`, therefore the lifetime inferred by the HKT cannot be `'static`).
-    ///
-    /// This allows the [`Parser`] to assume that [`BrandedNodeId`]s with the same `'brand` as it are in-bounds
-    /// (because that parser previously checked them), which allows for unchecked indexing, as well as safe direct mutation of AST nodes
-    pub(crate) fn with_tok<R>(
-        &self,
-        func: impl for<'brand> FnOnce(UncheckedToken<'brand>, &BrandedParser<'source, 'brand, Lex>) -> R,
-    ) -> R {
-        func(UncheckedToken(PhantomData), self)
-    }
-    /// [`Parser::with_tok`] but with a mutable reference to the Parser
-    pub(crate) fn with_tok_mut<R>(
-        &mut self,
-        func: impl for<'brand> FnOnce(
-            UncheckedToken<'brand>,
-            &mut BrandedParser<'source, 'brand, Lex>,
-        ) -> R,
-    ) -> R {
-        func(UncheckedToken(PhantomData), self)
-    }
-    /// Get a reference to a node from an id, panicing if `id` indexes out of bounds
-    #[inline]
-    pub(crate) fn node(&self, id: BrandedNodeId<'_>) -> &ExprNode {
-        &self.nodes[id.as_idx()]
-    }
-
+    
     /// Directly inserts a [`BrandedExprNode`] (as well as its accompanying [`Span`]) into this parser, returning
     /// a [`BrandedNodeId`] with the brand of the node that points to it.
     /// # Safety:
