@@ -5,7 +5,7 @@ use string_interner::symbol::SymbolU32;
 use crate::{
     middle::Comparison,
     util::{
-        branded::{Branded, CheckByChildIndices, Freeze, HasInvariantLifetime},
+        branded::{Branded, CheckByChildIndices, HasBrandLifetime, NotInteriorMutable},
         thin_boxed_slice::ThinBoxedSlice,
     },
 };
@@ -122,11 +122,11 @@ pub(crate) enum BrandedExprNode<'brand> {
     },
 }
 // Safety: 'brand is required to be invariant by BrandedNodeId
-unsafe impl<'b> HasInvariantLifetime<'b> for BrandedExprNode<'b> {
+unsafe impl<'b> HasBrandLifetime<'b> for BrandedExprNode<'b> {
     type Downcast<'downcast> = BrandedExprNode<'downcast>;
 }
 // Safety: ExprNode is not interior-mutable
-unsafe impl Freeze for BrandedExprNode<'_> {}
+unsafe impl NotInteriorMutable for BrandedExprNode<'_> {}
 impl Branded for BrandedExprNode<'_> {}
 
 unsafe impl<'a> CheckByChildIndices<'a> for BrandedExprNode<'a> {

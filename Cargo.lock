@@ -70,12 +70,22 @@ name = "desmoxide"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "desmoxide_derive",
  "logos",
  "miette",
  "replace_with",
  "string-interner",
  "strum",
  "thiserror 2.0.3",
+]
+
+[[package]]
+name = "desmoxide_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

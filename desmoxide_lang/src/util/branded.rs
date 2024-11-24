@@ -1,16 +1,19 @@
-use std::{marker::PhantomData, mem, ops::Index};
+use std::{marker::PhantomData, mem};
 
 pub(crate) type PhantomInvariant<'a> = PhantomData<fn(&'a ()) -> &'a ()>;
 
 mod sealed {
     use super::{
-        Branded, BrandedImpl, CheckIndex, CheckIndexMut, Freeze, HasInvariantLifetime, Yes,
+        Branded, CheckIndex, CheckIndexMut, HasBrandLifetime, NotInteriorMutable, Yes,
     };
 
     pub trait TypeEqSealed<T> {}
     impl<T> TypeEqSealed<T> for T {}
-    pub trait BrandedSealed<'brand>: Branded + Freeze + HasInvariantLifetime<'brand> {}
-    impl<'a, T> BrandedSealed<'a> for T where T: Branded + Freeze + HasInvariantLifetime<'a> {}
+    pub trait BrandedSealed<'brand>:
+        Branded + NotInteriorMutable + HasBrandLifetime<'brand>
+    {
+    }
+    impl<'a, T> BrandedSealed<'a> for T where T: Branded + NotInteriorMutable + HasBrandLifetime<'a> {}
     pub trait IndexCheckMonotonic {}
     impl IndexCheckMonotonic for Yes {}
     pub trait BlessSealed<'a, T>: CheckIndex<'a, T> {}
@@ -20,13 +23,13 @@ mod sealed {
 }
 use sealed::{BlessMutSealed, BlessSealed, BrandedSealed, IndexCheckMonotonic, TypeEqSealed};
 
-/// Marker trait for non-interior mutable types
+/// Marker trait types which may have a band
 /// # Safety
-/// `Self` **must not** be interior-mutable
-pub unsafe trait Freeze {}
+/// * `Self` **must not** be interior-mutable
+pub unsafe trait NotInteriorMutable {}
 
 // Safety: Copy types cannot be interior mutable
-unsafe impl<T: Copy> Freeze for T {}
+unsafe impl<T: Copy> NotInteriorMutable for T {}
 
 /// Asserts that two types are equal and provides methods to unify them
 pub trait TypeEq<T>: TypeEqSealed<T> {
@@ -50,8 +53,11 @@ impl<T> TypeEq<T> for T {
 }
 
 /// # Safety
-/// * the source of `'lt` must be **invariant**
-pub unsafe trait HasInvariantLifetime<'lt>: TypeEq<Self::Downcast<'lt>> {
+/// implementation ensures:
+/// * the source of `'lt` is **invariant**
+/// * the definition of `Self` may **not** contain any fields whose type names [`BrandedToken<'lt>`].
+/// * all safe constructors of `Self` must return `Self<'static>` (i.e. it must be impossible to safely construct a `Self` with a non-`'static` brand lifetime)
+pub unsafe trait HasBrandLifetime<'lt>: TypeEq<Self::Downcast<'lt>> {
     type Downcast<'downcast>;
 }
 
@@ -81,19 +87,17 @@ impl<'a, T> BrandedImpl<'a> for T where T: BrandedSealed<'a> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct BrandedToken<'brand>(PhantomInvariant<'brand>);
-pub trait BrandSource<'_brand>: BrandedImpl<'_brand> {
+pub trait BrandSource: BrandedImpl<'static> {
     fn with_tok<Func, Ret>(&self, f: Func) -> Ret
     where
-        Func: for<'brand> FnOnce(&Self::Downcast<'brand>, BrandedToken<'brand>) -> Ret,
+        Func: for<'unique> FnOnce(&Self::Downcast<'unique>, BrandedToken<'unique>) -> Ret,
         // disallow nested with_tok calls without brand erasure
-        '_brand: 'static,
     {
         f(self.this_ref(), BrandedToken(PhantomData))
     }
     fn with_tok_mut<Func, Ret>(&mut self, f: Func) -> Ret
     where
-        Func: for<'brand> FnOnce(&Self::Downcast<'brand>, BrandedToken<'brand>) -> Ret,
-        '_brand: 'static,
+        Func: for<'unique> FnOnce(&Self::Downcast<'unique>, BrandedToken<'unique>) -> Ret,
     {
         f(self.this_mut(), BrandedToken(PhantomData))
     }
@@ -101,8 +105,19 @@ pub trait BrandSource<'_brand>: BrandedImpl<'_brand> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CheckedIndex<'brand, T>(T, BrandedToken<'brand>);
+impl<'brand, 'index, T> CheckedIndex<'brand, T>
+where
+    T: BrandedImpl<'index>,
+{
+    fn rebrand_into_inner(self) -> T::Downcast<'brand> {
+        // Safety: this is valid due to the construction invariant of T: HasBrandLifetime (implied by the T: BrandedImpl bound).
+        // Essentially: if T is only safely constructible with a brand of `'static`, then safely constructing a T<'brand> such that
+        // BrandedToken<'brand> exists is not possible, i.e. safely constructing an unchecked index directly is impossible
+        unsafe { self.0.rebrand() }
+    }
+}
 pub trait BrandedCollection<'a, Item>: BrandedImpl<'a> {
-    type Index: Freeze;
+    type Index: NotInteriorMutable;
     /// # Safety
     /// must not cause UB for valid indices
     unsafe fn get_unchecked_index(&self, idx: Self::Index) -> &Item;
@@ -162,7 +177,7 @@ pub trait BrandedCollection<'a, Item>: BrandedImpl<'a> {
             .map(|v| unsafe { self.insert_unchecked_value(v) })
     }
 }
-impl<'a, T> BrandSource<'a> for T where T: BrandedImpl<'a> {}
+impl<T> BrandSource for T where T: BrandedImpl<'static> {}
 
 /// # Safety
 /// Implementations of this trait must ensure that if `check_index_mut` returns `Some(i)`, calling `self.get_unchecked`
@@ -200,17 +215,6 @@ pub trait BlessIndex<'brand, T>: BlessSealed<'brand, T> {
     ) -> Option<CheckedIndex<'brand, Self::Index>> {
         self.check_index(idx).map(|idx| CheckedIndex(idx, tok))
     }
-    #[inline]
-    fn bless_branded(
-        &self,
-        idx: Self::Index,
-        tok: BrandedToken<'brand>,
-    ) -> CheckedIndex<'brand, <Self::Index as HasInvariantLifetime<'brand>>::Downcast<'static>>
-    where
-        Self::Index: BrandedImpl<'brand>,
-    {
-        CheckedIndex(idx.unbrand(), tok)
-    }
 }
 impl<'brand, T, U> BlessIndex<'brand, U> for T where T: BlessSealed<'brand, U> {}
 pub trait BlessIndexMut<'brand, T>: BlessMutSealed<'brand, T> {
@@ -228,21 +232,21 @@ impl<'brand, T, U> BlessIndexMut<'brand, U> for T where T: BlessMutSealed<'brand
 /// implementations must ensure that:
 ///
 /// * If a type `T` implements [`BrandedCollection<'_, Self>`] `where T::Index = Self::Index`, then **all** values of type `T::Index` contained in this
-/// instance of `Self` must be present in the slice provided to the callback in [`with_children`](CheckByChildIndices::with_children)
+///     instance of `Self` must be present in the slice provided to the callback in [`with_children`](CheckByChildIndices::with_children)
 /// * index validation is the only invariant required for `Self` to be valid for insertion to `T`
 pub unsafe trait CheckByChildIndices<'brand>: BrandedImpl<'brand> {
-    type Index: Freeze;
+    type Index: NotInteriorMutable;
     fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R>;
 }
 /// # Safety
-/// returning `Some(v)` from [`check`](CheckItem::check) unconditionally asserts that `v` is valid for insertion into this collection
+/// returning `Some(v)` from [`check`](CheckableItem::check) unconditionally asserts that `v` is valid for insertion into this collection
 pub unsafe trait CheckableItem<'brand, Parent: BrandedCollection<'brand, Self>>:
     BrandedImpl<'brand>
 {
     fn check(self, parent_collection: &mut Parent) -> Option<Self>;
 }
 // Safety: invariants on CheckByChildIndices
-unsafe impl<'brand, T, U, I: Freeze + Copy> CheckableItem<'brand, T> for U
+unsafe impl<'brand, T, U, I: NotInteriorMutable + Copy> CheckableItem<'brand, T> for U
 where
     T: BrandedCollection<'brand, Self, Index = I> + BlessIndexMut<'brand, Self>,
     Self: CheckByChildIndices<'brand, Index = I>,
@@ -274,59 +278,75 @@ fn unit<T>(v: T) -> T {
 
 #[cfg(test)]
 mod tests {
-    use std::marker::PhantomData;
+    
 
-    use crate::util::branded::BlessIndex;
+    use crate::util::branded::{BlessIndex, BrandedImpl};
 
     use super::{
-        BrandSource, Branded, BrandedCollection, CheckIndex, Freeze, HasInvariantLifetime, No,
-        PhantomInvariant,
+        BrandSource, BrandedCollection, PhantomInvariant,
     };
+    mod inner {
+        use std::marker::PhantomData;
 
-    struct Test<'a>(Vec<u32>, PhantomInvariant<'a>);
-    unsafe impl Freeze for Test<'_> {}
-    unsafe impl<'a> HasInvariantLifetime<'a> for Test<'a> {
-        type Downcast<'downcast> = Test<'downcast>;
-    }
-    // "turns on" the sealed blanket impls
-    impl Branded for Test<'_> {}
-    impl<'a> BrandedCollection<'a, u32> for Test<'a> {
-        type Index = usize;
+        use crate::util::branded::{
+            Branded, BrandedCollection, CheckIndex, HasBrandLifetime, No, NotInteriorMutable,
+        };
 
-        unsafe fn get_unchecked_index(&self, idx: Self::Index) -> &u32 {
-            unsafe { self.0.get_unchecked(idx) }
+        use super::PhantomInvariant;
+
+        pub struct Test<'a>(Vec<u32>, PhantomInvariant<'a>);
+        unsafe impl NotInteriorMutable for Test<'_> {}
+        unsafe impl<'a> HasBrandLifetime<'a> for Test<'a> {
+            type Downcast<'downcast> = Test<'downcast>;
         }
+        // "turns on" the sealed blanket impls
+        impl Branded for Test<'_> {}
+        impl<'a> BrandedCollection<'a, u32> for Test<'a> {
+            type Index = usize;
 
-        unsafe fn get_unchecked_mut_index(&mut self, idx: Self::Index) -> &mut u32 {
-            unsafe { self.0.get_unchecked_mut(idx) }
-        }
+            unsafe fn get_unchecked_index(&self, idx: Self::Index) -> &u32 {
+                unsafe { self.0.get_unchecked(idx) }
+            }
 
-        unsafe fn insert_unchecked_value(&mut self, val: u32) -> Self::Index {
-            let i = self.0.len();
-            self.0.push(val);
-            i
+            unsafe fn get_unchecked_mut_index(&mut self, idx: Self::Index) -> &mut u32 {
+                unsafe { self.0.get_unchecked_mut(idx) }
+            }
+
+            unsafe fn insert_unchecked_value(&mut self, val: u32) -> Self::Index {
+                let i = self.0.len();
+                self.0.push(val);
+                i
+            }
         }
-    }
-    unsafe impl<'a> CheckIndex<'a, u32> for Test<'a> {
-        type MutableMonotonic = No;
-        fn check_index(&self, idx: Self::Index) -> Option<Self::Index> {
-            if idx < self.0.len() {
-                Some(idx)
-            } else {
-                None
+        unsafe impl<'a> CheckIndex<'a, u32> for Test<'a> {
+            type MutableMonotonic = No;
+            fn check_index(&self, idx: Self::Index) -> Option<Self::Index> {
+                if idx < self.0.len() {
+                    Some(idx)
+                } else {
+                    None
+                }
+            }
+        }
+        impl Test<'static> {
+            pub fn new(v: Vec<u32>) -> Self {
+                Self(v, PhantomData)
             }
         }
     }
+    pub(crate) type Test<'a> = inner::Test<'a>;
+
     #[test]
     fn using_test() {
-        let v = Test(vec![1, 2, 3, 4, 8, 10], PhantomData);
+        let v = Test::new(vec![1, 2, 3, 4, 8, 10]);
         v.with_tok(|v, tok| {
             assert!(v.bless(10, tok).is_none());
             let Some(checked) = v.bless(3, tok) else {
                 panic!("the world is ending")
             };
             // Look ma, no bounds-checking
-            dbg!(v.get_unchecked(checked));
+            assert_eq!(v.get_unchecked(checked), &4);
+            assert_eq!(v.unbrand_ref().get(3), Some(&4));
         });
     }
 }

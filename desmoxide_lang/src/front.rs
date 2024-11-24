@@ -1,20 +1,18 @@
 use std::{
     cell::Cell,
     cmp::Ordering,
-    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     fmt::Debug,
-    marker::PhantomData,
     mem,
     num::NonZeroU32,
     ops::Deref,
     sync::Arc,
 };
 
-use arc_swap::{ArcSwapAny, ArcSwapOption};
 use error::ParseError;
 use lexer::Token;
 use logos::{Logos, Span};
-use miette::{MietteSpanContents, SourceCode, SourceSpan, SpanContents};
+use miette::{SourceCode, SourceSpan, SpanContents};
 use parser::{expr::ParsedExpression, parser_internals::Parser, Ident, ParsingContext};
 use string_interner::{backend::BufferBackend, symbol::SymbolU32, StringInterner};
 
@@ -259,7 +257,7 @@ pub(crate) struct DesmoxideSpanContents {
 }
 impl SpanContents for DesmoxideSpanContents {
     fn data(&self) -> &[u8] {
-        &self.bytes.as_bytes()
+        self.bytes.as_bytes()
     }
 
     fn span(&self) -> &SourceSpan {

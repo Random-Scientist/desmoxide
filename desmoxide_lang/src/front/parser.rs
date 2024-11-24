@@ -8,7 +8,7 @@ use parser_internals::{BrandedParser, GenericSpanIter};
 use crate::util::restartable_iter::RestartableIterExt;
 
 use super::{
-    error::ParseError, DesmoxideSourceCode, ExpressionId, Interner, ParsedExpression, Parser, Token,
+    error::ParseError, DesmoxideSourceCode, ExpressionId, ParsedExpression, Parser, Token,
 };
 
 /// Defines the AST node type, ([`ExprNode`]) and parsed AST ([`Expr`])

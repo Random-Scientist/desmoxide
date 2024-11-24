@@ -2,7 +2,7 @@ use std::{iter::Peekable, marker::PhantomData, mem::transmute, num::NonZeroU32};
 
 use logos::{Logos, Span};
 
-use crate::front::lexer::Token;
+use crate::{front::lexer::Token, util::branded::PhantomInvariant};
 
 use super::{BrandedExprNode, ExprNode, ParsingContext};
 
@@ -23,6 +23,7 @@ impl<'source, T: Iterator<Item = (Result<Token, <Token as Logos<'source>>::Error
 /// [`BrandedParser`] with the `'static` brand
 pub(crate) type Parser<'source, T> = BrandedParser<'source, 'static, T>;
 /// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
+//#[inject_brand_lifetime('brand)]
 pub(crate) struct BrandedParser<'source, 'brand, Iter> {
     /// Stream of [`Token`]s to parse
     pub(super) lexer: Iter,
@@ -36,8 +37,7 @@ pub(crate) struct BrandedParser<'source, 'brand, Iter> {
     pub(super) nodes: Vec<ExprNode>,
     /// A parallel list of [`Span`]s, each containing the corresponding [`Span`] of the ExprNode at the same index in `nodes`
     pub(super) node_spans: Vec<Span>,
-    /// Invariant phantom lifetime, used to track the brand
-    _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
+    __invariant: PhantomInvariant<'brand>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,10 +55,10 @@ impl<'source, Lex> BrandedParser<'source, '_, Lex> {
             span_stack: Vec::new(),
             nodes: Vec::new(),
             node_spans: Vec::new(),
-            _invariant_brand: PhantomData,
+            __invariant: PhantomData,
         }
     }
-    
+
     /// Directly inserts a [`BrandedExprNode`] (as well as its accompanying [`Span`]) into this parser, returning
     /// a [`BrandedNodeId`] with the brand of the node that points to it.
     /// # Safety:
