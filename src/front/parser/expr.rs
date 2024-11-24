@@ -242,6 +242,7 @@ pub(crate) enum ParsedExpression {
     Var(VariableDefOrExplicit),
     Func(FunctionDef),
     Eq(EquationDef),
+    Empty,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct VariableDefOrExplicit {

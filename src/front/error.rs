@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, num::NonZeroU32};
 
 use logos::{Logos, Span};
 use miette::{Diagnostic, SourceSpan};
@@ -30,7 +30,7 @@ pub enum FrontendError {
     LoweringError(#[from] LoweringError),
 }
 impl FrontendError {
-    pub(crate) fn with_span(self, span: Span) -> CompileError {
+    pub(crate) fn with_span(self, span: Span, line_number: Option<NonZeroU32>) -> CompileError {
         CompileError {
             location: SourceSpan::new(span.start.into(), span.end - span.start),
             error: self,
@@ -39,11 +39,14 @@ impl FrontendError {
 }
 #[derive(Debug, Diagnostic, Error)]
 pub enum ParseError {
-    #[error("{}got unexpected token {}",
-        expected.as_ref().map(|e| format!("expected token {}, ", e.as_ref())).as_deref().unwrap_or(""), 
+    #[error("{}found unexpected token {}",
+        expected.as_ref().map(|e| format!("expected one of {}, ", e.iter().map(|v| v.as_ref()).collect::<Vec<_>>().join(", "))).as_deref().unwrap_or(""),
         tok.as_ref(),
     )]
-    UnexpectedToken { tok: Token, expected: Option<Token> },
+    UnexpectedToken {
+        tok: Token,
+        expected: Option<Box<[Token]>>,
+    },
     #[error("Lexer error")]
     LexError {
         #[source]
@@ -51,6 +54,8 @@ pub enum ParseError {
         #[label("while attempting to lex token here")]
         span: SourceSpan,
     },
+    #[error("part of expression is empty")]
+    IncompleteExpression,
 }
 #[derive(Debug, Diagnostic, Error)]
 

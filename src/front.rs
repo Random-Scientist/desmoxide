@@ -1,18 +1,21 @@
 use std::{
     cell::Cell,
-    collections::{hash_map::Entry, HashMap},
+    cmp::Ordering,
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap},
     fmt::Debug,
     marker::PhantomData,
+    mem,
     num::NonZeroU32,
     ops::Deref,
     sync::Arc,
 };
 
+use arc_swap::{ArcSwapAny, ArcSwapOption};
 use error::ParseError;
 use lexer::Token;
-use logos::Logos;
+use logos::{Logos, Span};
 use miette::{MietteSpanContents, SourceCode, SourceSpan, SpanContents};
-use parser::{expr::ParsedExpression, parser_internals::Parser, Ident};
+use parser::{expr::ParsedExpression, parser_internals::Parser, Ident, ParsingContext};
 use string_interner::{backend::BufferBackend, symbol::SymbolU32, StringInterner};
 
 /// Defines a common "compile error" type with metadata for printing a helpful message, including span information
@@ -99,10 +102,13 @@ impl Frontend {
             .take()
             .expect("String interner should have been present!");
         let cache = self.cache.get(&id).unwrap();
-        let (intern, res) = parser::parse_expression(Token::lexer_with_extras(
-            &self.sources.get_source(id),
-            &mut intern,
-        ));
+        let res = parser::parse_expression(
+            Token::lexer_with_extras(&self.sources.get_source(id), &mut intern),
+            ParsingContext {
+                sources: &self.sources,
+                expression_id: id,
+            },
+        );
         self.intern.set(Some(intern));
         cache.set(Some(res?));
         Ok(())
@@ -114,7 +120,7 @@ impl Default for Frontend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ExpressionId(u32);
 impl ExpressionId {
     pub(crate) fn new(val: u32) -> Self {
@@ -123,15 +129,44 @@ impl ExpressionId {
 }
 #[derive(Debug, Clone)]
 pub(crate) struct Expression {
-    // 1-indexed, 0: no line number
+    /// optional 1-indexed line number
     line_number: Option<NonZeroU32>,
     source: Arc<str>,
 }
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// type that enforces a total ordering on (expression id, line number) without requiring a line number for every ExpressionId
+pub(crate) struct ExpressionIdWithMaybeLineNo {
+    id: ExpressionId,
+    lineno: Option<NonZeroU32>,
+}
+impl PartialOrd for ExpressionIdWithMaybeLineNo {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ExpressionIdWithMaybeLineNo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.lineno, other.lineno) {
+            (Some(lhs), Some(rhs)) => {
+                match lhs.cmp(&rhs) {
+                    // tie-break equal with ID
+                    Ordering::Equal => self.id.cmp(&other.id),
+                    a => a,
+                }
+            }
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => self.id.cmp(&other.id),
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub(crate) struct DesmoxideSourceCode {
+    /// The list of backing source code for expressions
     sources: HashMap<ExpressionId, Expression>,
-    line_number_mapping: HashMap<NonZeroU32, ExpressionId>,
+    /// BTreeSet that maintains a total ordering of all expressions tracked by this [`Frontend`], mapping an
+    /// [`ExpressionIdWithMaybeLineNo`] to the byte length of its corresponding [`Expression`]'s source
+    expression_total_order: BTreeMap<ExpressionIdWithMaybeLineNo, usize>,
 }
 impl DesmoxideSourceCode {
     fn new_arc() -> Arc<Self> {
@@ -140,30 +175,46 @@ impl DesmoxideSourceCode {
     fn new() -> Self {
         Self {
             sources: HashMap::new(),
-            line_number_mapping: HashMap::new(),
+            expression_total_order: BTreeMap::new(),
         }
     }
     fn get_source(self: &Arc<Self>, id: ExpressionId) -> Arc<str> {
         Arc::clone(&self.sources.get(&id).unwrap().source)
     }
-    fn with_fork(self: &mut Arc<Self>, func: impl FnOnce(Self) -> Self) {
+    /// Forks this SourceCode, passing the forked value through a closure before storing it in back to the `Arc`
+    fn fork_with(self: &mut Arc<Self>, func: impl FnOnce(Self) -> Self) {
         replace_with::replace_with(self, Self::new_arc, |this| {
             Arc::new(func(Arc::unwrap_or_clone(this)))
         });
     }
+    fn fork(self: &Arc<Self>) -> Arc<Self> {
+        Arc::clone(self)
+    }
     fn modify_source(self: &mut Arc<Self>, id: ExpressionId, gen: impl FnOnce(&str) -> String) {
         let new = gen(&self.sources.get(&id).unwrap().source);
-        self.with_fork(move |mut this| {
-            this.sources.get_mut(&id).unwrap().source = new.into_boxed_str().into();
+        self.fork_with(move |mut this| {
+            let len = new.len();
+            let r = this.sources.get_mut(&id).unwrap();
+            r.source = new.into_boxed_str().into();
+            let k = ExpressionIdWithMaybeLineNo {
+                id,
+                lineno: r.line_number,
+            };
+            *this.expression_total_order.get_mut(&k).unwrap() = len;
             this
         });
     }
-    fn update_lineno(self: &mut Arc<Self>, id: ExpressionId, lineno: Option<NonZeroU32>) {
-        self.with_fork(|this| {
-            this.sources.get_mut(&id).unwrap().line_number = lineno;
-            if let Some(line) = lineno {
-                this.line_number_mapping.insert(line, id);
-            }
+    fn update_lineno(self: &mut Arc<Self>, id: ExpressionId, mut lineno: Option<NonZeroU32>) {
+        self.fork_with(|mut this| {
+            let r = &mut this.sources.get_mut(&id).unwrap().line_number;
+            mem::swap(r, &mut lineno);
+            let len = this
+                .expression_total_order
+                .remove(&ExpressionIdWithMaybeLineNo { id, lineno })
+                .expect("expression at id should already exist");
+            this.expression_total_order
+                .insert(ExpressionIdWithMaybeLineNo { id, lineno: *r }, len);
+            this
         });
     }
     fn insert_expression(
@@ -172,7 +223,8 @@ impl DesmoxideSourceCode {
         body: String,
         lineno: Option<NonZeroU32>,
     ) {
-        self.with_fork(|mut this| {
+        self.fork_with(|mut this| {
+            let len = body.len();
             this.sources.insert(
                 id,
                 Expression {
@@ -180,11 +232,20 @@ impl DesmoxideSourceCode {
                     source: body.into_boxed_str().into(),
                 },
             );
-            if let Some(i) = lineno {
-                this.line_number_mapping.insert(i, id);
-            }
+            this.expression_total_order
+                .insert(ExpressionIdWithMaybeLineNo { id, lineno }, len);
             this
         });
+    }
+    fn map_span(&self, expr: ExpressionId, span: Span) -> SourceSpan {
+        let lineno = self.sources.get(&expr).unwrap().line_number;
+        let id_with = ExpressionIdWithMaybeLineNo { id: expr, lineno };
+        assert!(self.expression_total_order.contains_key(&id_with));
+        let off = self
+            .expression_total_order
+            .range(..id_with)
+            .fold(0, |v, (_, &a)| v + a);
+        SourceSpan::new((off + span.start).into(), span.end - span.start)
     }
 }
 pub(crate) struct DesmoxideSpanContents {
@@ -228,6 +289,21 @@ impl SourceCode for DesmoxideSourceCode {
         context_lines_before: usize,
         context_lines_after: usize,
     ) -> Result<Box<dyn miette::SpanContents + 'a>, miette::MietteError> {
+        let mut accum = 0;
+        let mut id = None;
+        for (&i, &len) in self.expression_total_order.iter() {
+            let new = accum + self.sources.get(&i.id).unwrap().source.len();
+            if new > span.offset() {
+                // means that the requested span starts within this expression
+                id = Some(i);
+                break;
+            }
+            accum = new;
+        }
+        let Some(id) = id else {
+            return Err(miette::MietteError::OutOfBounds);
+        };
+        todo!()
     }
 }
 pub(crate) struct ExpressionCache {

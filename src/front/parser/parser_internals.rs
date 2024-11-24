@@ -4,7 +4,7 @@ use logos::{Logos, Span};
 
 use crate::front::lexer::Token;
 
-use super::{BrandedExprNode, ExprNode};
+use super::{BrandedExprNode, ExprNode, ParsingContext};
 
 pub(crate) trait GenericSpanIter<'source>:
     Iterator<Item = (Result<Token, <Token as Logos<'source>>::Error>, Span)>
@@ -26,6 +26,8 @@ pub(crate) type Parser<'source, T> = BrandedParser<'source, 'static, T>;
 pub(crate) struct BrandedParser<'source, 'brand, Iter> {
     /// Stream of [`Token`]s to parse
     pub(super) lexer: Iter,
+    /// Provides context for error generation (source code access and expression id)
+    pub(super) ctx: ParsingContext<'source>,
     /// Contains the covered [`Span`]s of the parsing carried out by various recursion levels
     pub(super) span_stack: Vec<Span>,
     /// Contains a list of [`ExprNode`]s which refer to each other to form a tree via [`NodeId`]s.
@@ -36,7 +38,6 @@ pub(crate) struct BrandedParser<'source, 'brand, Iter> {
     pub(super) node_spans: Vec<Span>,
     /// Invariant phantom lifetime, used to track the brand
     _invariant_brand: PhantomData<fn(&'brand ()) -> &'brand ()>,
-    _covariant_source: PhantomData<fn(&'source ())>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,14 +45,17 @@ pub(crate) struct BrandedParser<'source, 'brand, Iter> {
 pub(crate) struct UncheckedToken<'brand>(PhantomData<fn(&'brand ()) -> &'brand ()>);
 
 impl<'source, Lex> BrandedParser<'source, '_, Lex> {
-    pub(crate) fn new_with(val: Lex) -> BrandedParser<'source, 'static, Lex> {
+    pub(crate) fn new_with(
+        val: Lex,
+        ctx: ParsingContext<'source>,
+    ) -> BrandedParser<'source, 'static, Lex> {
         BrandedParser {
             lexer: val,
+            ctx,
             span_stack: Vec::new(),
             nodes: Vec::new(),
             node_spans: Vec::new(),
             _invariant_brand: PhantomData,
-            _covariant_source: PhantomData,
         }
     }
     /// Runs a closure with a reference to the [`Parser`] and [`UncheckedToken`] that live for a higher-kinded lifetime.

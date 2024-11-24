@@ -6,8 +6,9 @@ use core::mem::{align_of, size_of};
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::slice;
+use std::alloc;
 
-// from: https://github.com/seekstar/thin-boxed-slice/blob/main/src/lib.rs (with some cleanup and minor modifications)
+// from: https://github.com/seekstar/thin-boxed-slice/blob/main/src/lib.rs (with some cleanup and modifications)
 
 #[derive(Debug)]
 pub struct ThinBoxedSlice<T> {
@@ -35,7 +36,7 @@ impl<T> ThinBoxedSlice<T> {
     }
 }
 
-impl<T: Clone, A: Allocator> ThinBoxedSlice<T, A> {
+impl<T: Clone> ThinBoxedSlice<T> {
     pub fn new(s: &[T]) -> Self {
         let layout = Self::layout(s.len());
         unsafe {
@@ -57,21 +58,21 @@ impl<T: Clone, A: Allocator> ThinBoxedSlice<T, A> {
     }
 }
 
-impl<T, A: Allocator> Drop for ThinBoxedSlice<T, A> {
+impl<T> Drop for ThinBoxedSlice<T> {
     fn drop(&mut self) {
         unsafe {
-            alloc::dealloc(self.p, Self::layout(self.len()));
+            alloc::dealloc(self.p.as_ptr(), Self::layout(self.len()));
         }
     }
 }
 
-impl<T: Clone> From<&[T]> for ThinBoxedSlice<T, A> {
+impl<T: Clone> From<&[T]> for ThinBoxedSlice<T> {
     fn from(value: &[T]) -> Self {
         Self::new(value)
     }
 }
 
-impl<T: Clone, const N: usize> From<&[T; N]> for ThinBoxedSlice<T, A> {
+impl<T: Clone, const N: usize> From<&[T; N]> for ThinBoxedSlice<T> {
     fn from(value: &[T; N]) -> Self {
         Self::from(value.as_slice())
     }
@@ -111,7 +112,7 @@ impl<T: Hash> Hash for ThinBoxedSlice<T> {
         self.deref().hash(state);
     }
 }
-impl<T: Clone + Default> Clone for ThinBoxedSlice<T> {
+impl<T: Clone> Clone for ThinBoxedSlice<T> {
     fn clone(&self) -> Self {
         self.deref().into()
     }
