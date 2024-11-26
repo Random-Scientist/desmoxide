@@ -3,17 +3,12 @@ use std::{marker::PhantomData, mem};
 pub(crate) type PhantomInvariant<'a> = PhantomData<fn(&'a ()) -> &'a ()>;
 
 mod sealed {
-    use super::{
-        Branded, CheckIndex, CheckIndexMut, HasBrandLifetime, NotInteriorMutable, Yes,
-    };
+    use super::{CheckIndex, CheckIndexMut, HasBrandLifetime, NotInteriorMutable, Yes};
 
     pub trait TypeEqSealed<T> {}
     impl<T> TypeEqSealed<T> for T {}
-    pub trait BrandedSealed<'brand>:
-        Branded + NotInteriorMutable + HasBrandLifetime<'brand>
-    {
-    }
-    impl<'a, T> BrandedSealed<'a> for T where T: Branded + NotInteriorMutable + HasBrandLifetime<'a> {}
+    pub trait BrandedSealed<'brand>: Sized + NotInteriorMutable + HasBrandLifetime<'brand> {}
+    impl<'a, T> BrandedSealed<'a> for T where T: Sized + NotInteriorMutable + HasBrandLifetime<'a> {}
     pub trait IndexCheckMonotonic {}
     impl IndexCheckMonotonic for Yes {}
     pub trait BlessSealed<'a, T>: CheckIndex<'a, T> {}
@@ -23,7 +18,6 @@ mod sealed {
 }
 use sealed::{BlessMutSealed, BlessSealed, BrandedSealed, IndexCheckMonotonic, TypeEqSealed};
 
-/// Marker trait types which may have a band
 /// # Safety
 /// * `Self` **must not** be interior-mutable
 pub unsafe trait NotInteriorMutable {}
@@ -61,7 +55,6 @@ pub unsafe trait HasBrandLifetime<'lt>: TypeEq<Self::Downcast<'lt>> {
     type Downcast<'downcast>;
 }
 
-pub trait Branded: Sized {}
 pub trait BrandedImpl<'brand>: BrandedSealed<'brand> {
     unsafe fn rebrand<'new>(self) -> Self::Downcast<'new> {
         unsafe { mem::transmute::<Self::Downcast<'brand>, Self::Downcast<'new>>(self.this()) }
@@ -278,18 +271,15 @@ fn unit<T>(v: T) -> T {
 
 #[cfg(test)]
 mod tests {
-    
 
     use crate::util::branded::{BlessIndex, BrandedImpl};
 
-    use super::{
-        BrandSource, BrandedCollection, PhantomInvariant,
-    };
+    use super::{BrandSource, BrandedCollection, PhantomInvariant};
     mod inner {
         use std::marker::PhantomData;
 
         use crate::util::branded::{
-            Branded, BrandedCollection, CheckIndex, HasBrandLifetime, No, NotInteriorMutable,
+            BrandedCollection, CheckIndex, HasBrandLifetime, No, NotInteriorMutable,
         };
 
         use super::PhantomInvariant;
@@ -300,7 +290,6 @@ mod tests {
             type Downcast<'downcast> = Test<'downcast>;
         }
         // "turns on" the sealed blanket impls
-        impl Branded for Test<'_> {}
         impl<'a> BrandedCollection<'a, u32> for Test<'a> {
             type Index = usize;
 

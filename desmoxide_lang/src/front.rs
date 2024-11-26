@@ -86,11 +86,10 @@ impl Frontend {
         new_id
     }
     pub fn update_expr(&mut self, id: ExpressionId, update: impl FnOnce(&str) -> String) {
-        let exp = self.cache.get_mut(&id).unwrap();
-        exp.inner.set(None);
+        self.cache.get_mut(&id).unwrap().set(None);
         self.sources.modify_source(id, update);
     }
-    /// Returns a reference to the backing string of an expression
+    /// Returns an `Arc` with the current backing string of an expression
     pub fn expr(&self, id: ExpressionId) -> Arc<str> {
         self.sources.get_source(id)
     }
@@ -273,7 +272,7 @@ impl SpanContents for DesmoxideSpanContents {
     }
 
     fn line_count(&self) -> usize {
-        self.line
+        self.line_count
     }
     fn name(&self) -> Option<&str> {
         Some(&*self.expr_name)
