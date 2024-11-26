@@ -14,13 +14,13 @@ use super::{BrandedNodeId, NodeId};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Expr {
-    nodes: Vec<ExprNode>,
+    nodes: Vec<ExprNode<'static>>,
     root: NodeId,
 }
 
-pub(crate) type ExprNode = BrandedExprNode<'static>;
+/// Node in the AST of a desmos expression
 #[derive(Debug, Clone)]
-pub(crate) enum BrandedExprNode<'brand> {
+pub(crate) enum ExprNode<'brand> {
     /// a numeric literal
     /// ## Examples
     /// * `1.0`
@@ -45,9 +45,17 @@ pub(crate) enum BrandedExprNode<'brand> {
     /// A range list literal
     /// ## Examples
     /// * `[1...100]`
+    /// * `[1...]`
     /// * `[1,4...10]`
-    RangeList(RangeList<'brand>),
-    /// A normal list literal
+    /// * `[1,4...]`
+    RangeList {
+        start: BrandedNodeId<'brand>,
+        interval_marker: Option<BrandedNodeId<'brand>>,
+        /// note to implementors: the semantics of the ending of arithmetic sequence are rounding-based, not greter than or equal to.
+        /// the implementation is expected to choose the closest
+        end: Option<BrandedNodeId<'brand>>,
+    },
+    /// A standard list literal
     /// ## Examples
     /// * `[1, 2, a, b, f(c)]`
     /// * `[c^{2}, \frac{a}{b}, 3]`
@@ -60,7 +68,7 @@ pub(crate) enum BrandedExprNode<'brand> {
         body: BrandedNodeId<'brand>,
         vars: ThinBoxedSlice<(Ident, BrandedNodeId<'brand>)>,
     },
-    /// Ambiguous case in the parsing phase, either a function call or implicit multiplication, depending on the type of `prefix` (which cannot be known at parse-time)
+    /// Ambiguous case in the parsing phase, either a function call, implicit multiplication, or the point constructor, depending on the type of `prefix` (which cannot be known at parse-time)
     /// ## Examples
     /// * `f_{unc}(a, b)` (function call)
     /// * `v_{ar}(a, b)` (implicit multiply by point constructor)
@@ -103,6 +111,7 @@ pub(crate) enum BrandedExprNode<'brand> {
     /// ## Examples
     /// * `\int_{a}^{b}xdx`
     /// * `\int_{1}^{2}tdt`
+    /// `integrand` invariably points to an IntegrandOrDiff node
     Integral {
         /// Start bound of the integral
         lower: BrandedNodeId<'brand>,
@@ -115,6 +124,7 @@ pub(crate) enum BrandedExprNode<'brand> {
     /// ## Examples
     /// * `f'(a)`
     /// * `\frac{d}{dx}x^{2}`
+    /// `diff` invariably points to an IntegrandOrDiff node
     Derivative { diff: BrandedNodeId<'brand> },
     IntegrandOrDiff {
         integration_or_diff_var: Ident,
@@ -125,13 +135,13 @@ pub(crate) enum BrandedExprNode<'brand> {
 // raw constructor is safe because because the brand lifetime is constrained by BrandedNodeId,
 // which is only safely constructible for 'static
 // does not contain any BrandedToken s
-unsafe impl<'b> HasBrandLifetime<'b> for BrandedExprNode<'b> {
-    type Downcast<'downcast> = BrandedExprNode<'downcast>;
+unsafe impl<'b> HasBrandLifetime<'b> for ExprNode<'b> {
+    type Downcast<'downcast> = ExprNode<'downcast>;
 }
-// Safety: ExprNode is not interior-mutable
-unsafe impl NotInteriorMutable for BrandedExprNode<'_> {}
+// Safety: ExprNode does not contain any interior mutable types
+unsafe impl NotInteriorMutable for ExprNode<'_> {}
 
-unsafe impl<'a> CheckByChildIndices<'a> for BrandedExprNode<'a> {
+unsafe impl<'a> CheckByChildIndices<'a> for ExprNode<'a> {
     type Index = BrandedNodeId<'a>;
 
     fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R> {
@@ -139,62 +149,54 @@ unsafe impl<'a> CheckByChildIndices<'a> for BrandedExprNode<'a> {
     }
 }
 
-impl<'brand> BrandedExprNode<'brand> {
-    /// Runs the given closure with a reference to a slice containing the child NodeIds of this [`ExprNode`]
+impl<'brand> ExprNode<'brand> {
+    /// Runs the given closure with a reference to a slice containing the child NodeIds of this [`ExprNode`], Short-circuits by returning [`None`] if a node has no children.
+    ///
     /// (used when ensuring that provided [`NodeId`]s of an untrusted [`ExprNode`] are in-bounds if they are not provided via the unchecked API)
     ///
-    /// Short-circuits by returning [`None`] if a node has no children
+    /// ## INVARIANT
+    /// the closure is called on every possible child index contained in this node variant
     pub(crate) fn with_children<R>(
         &self,
         cb: impl FnOnce(&[BrandedNodeId<'brand>]) -> R,
     ) -> Option<R> {
-        match self {
-            BrandedExprNode::NumberLit(_) => None,
-            BrandedExprNode::Ident(_) => None,
-            BrandedExprNode::Binary(id1, id2, _) => Some(cb(&[*id1, *id2])),
-            BrandedExprNode::Unary(id1, _) => Some(cb(&[*id1])),
-            BrandedExprNode::RangeList(range_list) => {
-                Some(if let Some(im) = &range_list.interval_marker {
-                    cb(&[*im, range_list.start, range_list.end])
-                } else {
-                    cb(&[range_list.start, range_list.end])
-                })
-            }
-            BrandedExprNode::ListLit(thin_boxed_slice) => Some(cb(thin_boxed_slice)),
-            BrandedExprNode::ListComp { body, vars } => {
+        Some(match self {
+            ExprNode::NumberLit(_) => return None,
+            ExprNode::Ident(_) => return None,
+            ExprNode::Binary(id1, id2, _) => cb(&[*id1, *id2]),
+            ExprNode::Unary(id1, _) => cb(&[*id1]),
+            ExprNode::RangeList {
+                start,
+                interval_marker,
+                end,
+            } => match (interval_marker, end) {
+                (None, None) => cb(&[*start]),
+                (Some(v), None) => cb(&[*start, *v]),
+                (None, Some(v)) => cb(&[*start, *v]),
+                (Some(a), Some(b)) => cb(&[*start, *a, *b]),
+            },
+            ExprNode::ListLit(thin_boxed_slice) => cb(thin_boxed_slice),
+            ExprNode::ListComp { body, vars } => {
                 let mut v = vars.iter().map(|v| &v.1).copied().collect::<Vec<_>>();
                 v.push(*body);
-                Some(cb(&v))
+                cb(&v)
             }
-            BrandedExprNode::Sum { initial, end, .. } => Some(cb(&[*initial, *end])),
-            BrandedExprNode::Prod { initial, end, .. } => Some(cb(&[*initial, *end])),
-            BrandedExprNode::Integral {
+            ExprNode::Sum { initial, end, .. } => cb(&[*initial, *end]),
+            ExprNode::Prod { initial, end, .. } => cb(&[*initial, *end]),
+            ExprNode::Integral {
                 lower,
                 upper,
                 integrand,
-            } => Some(cb(&[*lower, *upper, *integrand])),
-            BrandedExprNode::Derivative { diff } => Some(cb(&[*diff])),
-            BrandedExprNode::IntegrandOrDiff { expression, .. } => Some(cb(&[*expression])),
-            BrandedExprNode::Parens { args, .. } => Some(cb(args)),
-            BrandedExprNode::With { expr, with_defs } => {
+            } => cb(&[*lower, *upper, *integrand]),
+            ExprNode::Derivative { diff } => cb(&[*diff]),
+            ExprNode::IntegrandOrDiff { expression, .. } => cb(&[*expression]),
+            ExprNode::Parens { args, .. } => cb(args),
+            ExprNode::With { expr, with_defs } => {
                 let mut v = with_defs.iter().map(|v| &v.1).copied().collect::<Vec<_>>();
                 v.push(*expr);
-                Some(cb(&v))
+                cb(&v)
             }
-        }
-    }
-    /// Removes the brand on this [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_val(self) -> ExprNode {
-        // Safety: transmutes that only affect lifetime parameters are unconditionally allowed (i.e. lifetime parameters cannot cause layout instability)
-        // the 'static brand is always safe to apply because it is the one brand where the creation of a corresponding UncheckedToken<'static>
-        // is impossible due to the construction invariants on it (see Parser::with_token and Parser::with_token_mut)
-        unsafe { mem::transmute::<BrandedExprNode<'_>, BrandedExprNode<'static>>(self) }
-    }
-    /// Removes the brand on this reference to an [`ExprNode`], if it is present, replacing the brand lifetime with `'static`
-    pub(crate) fn unbrand_ref(&self) -> &ExprNode {
-        // Safety: transmutes that only affect references are unconditionally allowed, for a discussion of the effect of the lifetime
-        // cast see the above safety comments in unbrand_val above
-        unsafe { mem::transmute::<&BrandedExprNode<'_>, &BrandedExprNode<'static>>(self) }
+        })
     }
 }
 

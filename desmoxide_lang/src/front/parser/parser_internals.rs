@@ -2,9 +2,9 @@ use std::{iter::Peekable, marker::PhantomData, mem::transmute, num::NonZeroU32};
 
 use logos::{Logos, Span};
 
-use crate::{front::lexer::Token, util::branded::PhantomInvariant};
+use crate::front::lexer::Token;
 
-use super::{BrandedExprNode, ExprNode, ParsingContext};
+use super::{ExprNode, ParsingContext};
 
 pub(crate) trait GenericSpanIter<'source>:
     Iterator<Item = (Result<Token, <Token as Logos<'source>>::Error>, Span)>
@@ -24,19 +24,13 @@ mod branded_structs {
     #[derive(Debug, Clone, Copy)]
     #[repr(transparent)]
     /// An index type that represents the index of an AST node for a certain lifetime.
-    ///
-    /// If the `'brand` lifetime is `'static` this represents an untrusted index
-    /// (i.e. it is not certain whether the AST node this points to lies in-bounds or not)
-    ///
-    /// If the `'brand` lifetime is some other lifetime, this represents a trusted index that known to be in-bounds for the
-    /// corresponding [`Parser`] struct for the duration of that lifetime
     pub(crate) struct NodeId<'brand> {
         /// Inner index, stored as index + 1 for layout optimization reasons
         inner: NonZeroU32,
     }
     /// Holds all of the state required to parse an individual expression, recursively constructing an AST from a stream of tokens
     pub(crate) struct Parser<'source, 'brand, Iter> {
-        /// Stream of [`Token`]s to parse
+        /// Stream of [`Token`]s (and associated [`Span`]s) to parse
         pub(super) lexer: Iter,
         /// Provides context for error generation (source code access and expression id)
         pub(super) ctx: ParsingContext<'source>,
@@ -45,13 +39,13 @@ mod branded_structs {
         /// Contains a list of [`ExprNode`]s which refer to each other to form a tree via [`NodeId`]s.
         /// # Invariant
         /// All [`NodeId`]s contained within [`ExprNode`]s in this vec have indices which lie within 0..nodes.len() (i.e. it is safe to do unchecked indexing with them)
-        pub(super) nodes: Vec<ExprNode>,
+        pub(super) nodes: Vec<ExprNode<'static>>,
         /// A parallel list of [`Span`]s, each containing the corresponding [`Span`] of the ExprNode at the same index in `nodes`
         pub(super) node_spans: Vec<Span>,
     }
 }
 
-impl<'source, Lex> BrandedParser<'source, 'static, Lex> {
+impl<'source, Lex> Parser<'source, Lex> {
     pub(crate) fn new_with(val: Lex, ctx: ParsingContext<'source>) -> Self {
         Self::new(val, ctx, Vec::new(), Vec::new(), Vec::new())
     }

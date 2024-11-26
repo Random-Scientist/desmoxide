@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-pub(crate) use expr::{BrandedExprNode, Expr, ExprNode, Ident};
+pub(crate) use expr::{Expr, ExprNode, Ident};
 use logos::Lexer;
 pub(crate) use parser_internals::{BrandedNodeId, NodeId};
 use parser_internals::{BrandedParser, GenericSpanIter};
