@@ -141,13 +141,13 @@ unsafe impl<'b> HasBrandLifetime<'b> for ExprNode<'b> {
 // Safety: ExprNode does not contain any interior mutable types
 unsafe impl NotInteriorMutable for ExprNode<'_> {}
 
-unsafe impl<'a> CheckByChildIndices<'a> for ExprNode<'a> {
-    type Index = BrandedNodeId<'a>;
+// unsafe impl CheckByChildIndices for ExprNode<'a> {
+//     type Index = BrandedNodeId<'a>;
 
-    fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R> {
-        self.with_children(f)
-    }
-}
+//     fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R> {
+//         self.with_children(f)
+//     }
+// }
 
 impl<'brand> ExprNode<'brand> {
     /// Runs the given closure with a reference to a slice containing the child NodeIds of this [`ExprNode`], Short-circuits by returning [`None`] if a node has no children.

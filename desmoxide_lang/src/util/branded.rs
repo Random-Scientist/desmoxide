@@ -1,13 +1,15 @@
 use std::{
     marker::PhantomData,
     mem,
-    ops::{Deref, Index},
+    ops::{Deref, DerefMut, Index, IndexMut},
 };
 
 pub(crate) type PhantomInvariant<'a> = PhantomData<fn(&'a ()) -> &'a ()>;
 
 mod sealed {
-    use super::{CheckIndex, CheckIndexMut, HasBrandLifetime, NotInteriorMutable, Yes};
+    use super::{
+        BrandedCollection, CheckIndex, CheckIndexMut, HasBrandLifetime, NotInteriorMutable, Yes,
+    };
 
     pub trait TypeEqSealed<T> {}
     impl<T> TypeEqSealed<T> for T {}
@@ -15,10 +17,10 @@ mod sealed {
     impl<'a, T> BrandedSealed<'a> for T where T: Sized + NotInteriorMutable + HasBrandLifetime<'a> {}
     pub trait IndexCheckMonotonic {}
     impl IndexCheckMonotonic for Yes {}
-    pub trait BlessSealed<'a, Idx>: CheckIndex<'a, Idx> {}
-    impl<'a, T, U> BlessSealed<'a, U> for T where T: CheckIndex<'a, U> {}
-    pub trait BlessMutSealed<'a, Idx>: CheckIndexMut<'a, Idx> {}
-    impl<'a, T, U> BlessMutSealed<'a, U> for T where T: CheckIndexMut<'a, U> {}
+    pub trait BlessSealed<'a, Idx>: CheckIndex<Idx> + BrandedCollection<'a, Idx> {}
+    impl<'a, T, U> BlessSealed<'a, U> for T where T: CheckIndex<U> + BrandedCollection<'a, U> {}
+    pub trait BlessMutSealed<'a, Idx>: CheckIndexMut<Idx> + BrandedCollection<'a, Idx> {}
+    impl<'a, T, U> BlessMutSealed<'a, U> for T where T: CheckIndexMut<U> + BrandedCollection<'a, U> {}
 }
 use sealed::{BlessMutSealed, BlessSealed, BrandedSealed, IndexCheckMonotonic, TypeEqSealed};
 
@@ -34,6 +36,9 @@ pub trait TypeEq<T>: TypeEqSealed<T> {
     fn this(self) -> T;
     fn this_ref(&self) -> &T;
     fn this_mut(&mut self) -> &mut T;
+    fn from(val: T) -> Self;
+    fn from_ref(r: &T) -> &Self;
+    fn from_mut(r: &mut T) -> &mut Self;
 }
 impl<T> TypeEq<T> for T {
     #[inline(always)]
@@ -48,6 +53,18 @@ impl<T> TypeEq<T> for T {
     fn this_mut(&mut self) -> &mut T {
         self
     }
+    #[inline(always)]
+    fn from(val: T) -> Self {
+        val
+    }
+    #[inline(always)]
+    fn from_ref(r: &T) -> &Self {
+        r
+    }
+    #[inline(always)]
+    fn from_mut(r: &mut T) -> &mut Self {
+        r
+    }
 }
 
 /// # Safety
@@ -60,24 +77,38 @@ pub unsafe trait HasBrandLifetime<'lt>: TypeEq<Self::Downcast<'lt>> {
 }
 
 pub trait BrandedImpl<'brand>: BrandedSealed<'brand> {
+    #[inline(always)]
     unsafe fn rebrand<'new>(self) -> Self::Downcast<'new> {
         unsafe { mem::transmute::<Self::Downcast<'brand>, Self::Downcast<'new>>(self.this()) }
     }
+    #[inline(always)]
     fn unbrand(self) -> Self::Downcast<'static> {
         unsafe { self.rebrand::<'static>() }
     }
+    #[inline(always)]
     unsafe fn rebrand_ref<'new>(&self) -> &Self::Downcast<'new> {
         unsafe { mem::transmute::<&Self::Downcast<'brand>, &Self::Downcast<'new>>(self.this_ref()) }
     }
+    #[inline(always)]
     fn unbrand_ref(&self) -> &Self::Downcast<'static> {
         unsafe { self.rebrand_ref() }
     }
+    #[inline(always)]
     unsafe fn rebrand_mut<'new>(&mut self) -> &mut Self::Downcast<'new> {
         unsafe {
             mem::transmute::<&mut Self::Downcast<'brand>, &mut Self::Downcast<'new>>(
                 self.this_mut(),
             )
         }
+    }
+    #[inline(always)]
+    unsafe fn from_downcast(d: Self::Downcast<'brand>) -> Self {
+        <Self as TypeEq<Self::Downcast<'brand>>>::from(d)
+    }
+    #[inline(always)]
+    unsafe fn upcast_rebrand<'a>(downcast: Self::Downcast<'a>) -> Self {
+        let v = unsafe { mem::transmute::<Self::Downcast<'_>, Self::Downcast<'brand>>(downcast) };
+        Self::from_downcast(v)
     }
 }
 impl<'a, T> BrandedImpl<'a> for T where T: BrandedSealed<'a> {}
@@ -94,7 +125,7 @@ pub trait BrandSource: BrandedImpl<'static> {
     }
     fn with_tok_mut<Func, Ret>(&mut self, f: Func) -> Ret
     where
-        Func: for<'unique> FnOnce(&Self::Downcast<'unique>, BrandedToken<'unique>) -> Ret,
+        Func: for<'unique> FnOnce(&mut Self::Downcast<'unique>, BrandedToken<'unique>) -> Ret,
     {
         f(self.this_mut(), BrandedToken(PhantomData))
     }
@@ -113,6 +144,58 @@ where
         unsafe { self.0.rebrand() }
     }
 }
+pub trait InsertableBrandedCollection<'a, Idx: BrandedImpl<'static> + Copy>:
+    BrandedCollection<'a, Idx> + CheckIndexMut<Idx>
+where
+    Self::Item: BrandedImpl<'static> + CheckableItem<Idx::Downcast<'static>, Self>,
+{
+    /// # Safety
+    /// * must never cause UB for values that have been checked
+    /// * returned index must be valid for `get_unchecked_*`
+    unsafe fn insert_unchecked_value(&mut self, val: Self::Item) -> Idx;
+    /// Attempts a checked insert
+    #[inline]
+    fn try_insert(
+        &mut self,
+        val: <Self::Item as HasBrandLifetime<'static>>::Downcast<'_>,
+    ) -> Option<Idx> {
+        unsafe { Self::Item::upcast_rebrand(val) }
+            .check(self)
+            .map(|v| unsafe { self.insert_unchecked_value(v) })
+    }
+    /// Attempts a checked insert, panicing on failiure
+    #[inline]
+    fn insert(&mut self, val: <Self::Item as HasBrandLifetime<'static>>::Downcast<'_>) -> Idx {
+        self.try_insert(val)
+            .expect("value should have been inserted!")
+    }
+    #[inline]
+    fn try_insert_checked(
+        &mut self,
+        val: <Self::Item as HasBrandLifetime<'static>>::Downcast<'_>,
+        tok: BrandedToken<'a>,
+    ) -> Option<CheckedIndex<'a, Idx>> {
+        self.try_insert(val).map(|v| CheckedIndex(v, tok))
+    }
+    #[inline]
+    fn insert_checked(
+        &mut self,
+        val: <Self::Item as HasBrandLifetime<'static>>::Downcast<'_>,
+        tok: BrandedToken<'a>,
+    ) -> CheckedIndex<'a, Idx> {
+        CheckedIndex(self.insert(val), tok)
+    }
+    fn insert_unchecked(
+        &mut self,
+        val: <Self::Item as HasBrandLifetime<'static>>::Downcast<'a>,
+        tok: BrandedToken<'a>,
+    ) -> CheckedIndex<'a, Idx> {
+        CheckedIndex(
+            unsafe { self.insert_unchecked_value(Self::Item::upcast_rebrand(val)) },
+            tok,
+        )
+    }
+}
 pub trait BrandedCollection<'a, Index>: BrandedImpl<'a> {
     type Item;
     /// # Safety
@@ -121,10 +204,7 @@ pub trait BrandedCollection<'a, Index>: BrandedImpl<'a> {
     /// # Safety
     /// must not cause UB for valid indices
     unsafe fn get_unchecked_mut_index(&mut self, idx: Index) -> &mut Self::Item;
-    /// # Safety
-    /// * must never cause UB for values that have been checked
-    /// * returned index must be valid for `get_unchecked_*`
-    unsafe fn insert_unchecked_value(&mut self, val: Self::Item) -> Index;
+
     #[inline]
     fn get(&self, idx: Index) -> Option<&Self::Item>
     where
@@ -163,26 +243,16 @@ pub trait BrandedCollection<'a, Index>: BrandedImpl<'a> {
         // Safety: construction invariant of CheckedIndex requires that this index has been checked before and is not yet invalid
         unsafe { self.get_unchecked_mut_index(idx.0) }
     }
-    #[inline]
-    fn try_insert(&mut self, val: Self::Item) -> Option<Index>
-    where
-        Self::Item: CheckableItem<'static, Index, Self::Downcast<'static>>,
-        Self::Downcast<'static>: BrandedCollection<'static, Index, Item = Self::Item>,
-    {
-        // Safety: checking is done unconditionally here so we can safely temporarily unbrand Self to 'static
-        val.check(unsafe { self.rebrand_mut() })
-            .map(|v| unsafe { self.insert_unchecked_value(v) })
-    }
 }
 impl<T> BrandSource for T where T: BrandedImpl<'static> {}
 
 /// # Safety
 /// Implementations of this trait must ensure that if `check_index_mut` returns `Some(i)`, calling `self.get_unchecked`
 /// or `self.get_unchecked_mut` with `i` will not cause UB for the duration of `'brand`
-pub unsafe trait CheckIndexMut<'brand, Idx>: BrandedCollection<'brand, Idx> {
+pub unsafe trait CheckIndexMut<Idx> {
     fn check_index_mut(&mut self, idx: Idx) -> Option<Idx>;
 }
-unsafe impl<'brand, Idx, T: CheckIndex<'brand, Idx>> CheckIndexMut<'brand, Idx> for T
+unsafe impl<'brand, Idx, T: CheckIndex<Idx>> CheckIndexMut<Idx> for T
 where
     T::MutableMonotonic: IndexCheckMonotonic,
 {
@@ -193,7 +263,7 @@ where
 /// # Safety
 /// Implementations of this trait must ensure that if `check_index` returns `Some(i)`, calling `self.get_unchecked`
 /// or `self.get_unchecked_mut` with `i` will not cause UB for the duration of `'brand`
-pub unsafe trait CheckIndex<'brand, Idx>: BrandedCollection<'brand, Idx> {
+pub unsafe trait CheckIndex<Idx> {
     /// Set to [`Yes`] if indices checked by check_index are guaranteed to be monotonic under mutation
     /// (i.e. any possible mutation of the collection will not invalidate previously checked indices)
     /// Note that this forms part of the `unsafe` guarantees made by implementations of this trait
@@ -227,25 +297,27 @@ impl<'brand, T, U> BlessIndexMut<'brand, U> for T where T: BlessMutSealed<'brand
 /// * If a type `T` implements [`BrandedCollection<'_, Self>`] `where T::Index = Self::Index`, then **all** values of type `T::Index` contained in this
 ///     instance of `Self` must be present in the slice provided to the callback in [`with_children`](CheckByChildIndices::with_children)
 /// * index validation is the only invariant required for `Self` to be valid for insertion to `T`
-pub unsafe trait CheckByChildIndices<'brand>: BrandedImpl<'brand> {
+pub unsafe trait CheckByChildIndices: Sized + NotInteriorMutable {
     type Index: NotInteriorMutable;
     fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R>;
 }
 /// # Safety
 /// returning `Some(v)` from [`check`](CheckableItem::check) unconditionally asserts that `v` is valid for insertion into this collection
-pub unsafe trait CheckableItem<'brand, Idx, Parent: BrandedCollection<'brand, Idx, Item = Self>>:
-    BrandedImpl<'brand>
-{
+pub unsafe trait CheckableItem<Idx, Parent>: Sized + NotInteriorMutable {
     fn check(self, parent_collection: &mut Parent) -> Option<Self>;
 }
-
-unsafe impl<'brand, Val, Collection, Index: NotInteriorMutable + Copy>
-    CheckableItem<'brand, Index, Collection> for Val
-where
-    Val: CheckByChildIndices<'brand, Index = Index>,
-    Collection: BrandedCollection<'brand, Index, Item = Val> + CheckIndexMut<'brand, Index>,
+unsafe impl<
+        'a,
+        Val: CheckByChildIndices<Index = Idx>,
+        Collection: BrandedCollection<'a, Idx, Item = Val> + CheckIndexMut<Idx>,
+        Idx: NotInteriorMutable + Copy,
+    > CheckableItem<Idx, Collection> for Val
 {
     fn check(self, parent_collection: &mut Collection) -> Option<Self> {
+        #[inline]
+        fn unit<T>(v: T) -> T {
+            v
+        }
         if self
             .with_children(
                 #[inline]
@@ -264,11 +336,25 @@ where
         }
     }
 }
-struct LocalCollectionRef<'borrow, T>(&'borrow T);
+
+pub struct LocalCollectionRef<'borrow, T>(&'borrow T);
+pub struct LocalCollectionRefMut<'borrow, T>(&'borrow mut T);
 impl<T> Deref for LocalCollectionRef<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl<T> Deref for LocalCollectionRefMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl<T> DerefMut for LocalCollectionRefMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
         self.0
     }
 }
@@ -277,11 +363,18 @@ impl<'borrow, 'brand, T: BrandedImpl<'brand>> From<&'borrow T> for LocalCollecti
         Self(value)
     }
 }
+impl<'borrow, 'brand, T: BrandedImpl<'brand>> From<&'borrow mut T>
+    for LocalCollectionRef<'borrow, T>
+{
+    fn from(value: &'borrow mut T) -> Self {
+        Self(value)
+    }
+}
 impl<'brand, Val, Collection, Idx> Index<CheckedIndex<'brand, Idx>>
     for LocalCollectionRef<'_, Collection>
 where
     Collection: BrandedCollection<'brand, Idx, Item = Val>,
-    Collection: CheckIndex<'brand, Idx>,
+    Collection: CheckIndex<Idx>,
     Idx: NotInteriorMutable,
 {
     type Output = Val;
@@ -290,20 +383,37 @@ where
         self.get_unchecked(index)
     }
 }
+impl<'brand, Val, Collection, Idx> Index<CheckedIndex<'brand, Idx>>
+    for LocalCollectionRefMut<'_, Collection>
+where
+    Collection: BrandedCollection<'brand, Idx, Item = Val>,
+    Collection: CheckIndex<Idx>,
+    Idx: NotInteriorMutable,
+{
+    type Output = Val;
 
-#[inline]
-fn unit<T>(v: T) -> T {
-    v
+    fn index(&self, index: CheckedIndex<'brand, Idx>) -> &Self::Output {
+        self.get_unchecked(index)
+    }
+}
+impl<'brand, Val, Collection, Idx> IndexMut<CheckedIndex<'brand, Idx>>
+    for LocalCollectionRefMut<'_, Collection>
+where
+    Collection: BrandedCollection<'brand, Idx, Item = Val>,
+    Collection: CheckIndexMut<Idx> + CheckIndex<Idx>,
+    Idx: NotInteriorMutable,
+{
+    fn index_mut(&mut self, index: CheckedIndex<'brand, Idx>) -> &mut Self::Output {
+        self.get_unchecked_mut(index)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use inner2::{BrandedTest, TestCollection, TestItem};
 
-    use inner::Test;
+    use crate::util::branded::InsertableBrandedCollection;
 
-    use crate::util::branded::{BlessIndex, BrandedImpl};
-
-    use super::{BrandSource, BrandedCollection};
     mod inner {
 
         use crate::util::branded::{BrandedCollection, CheckIndex, No, NotInteriorMutable};
@@ -324,14 +434,8 @@ mod tests {
             unsafe fn get_unchecked_mut_index(&mut self, idx: usize) -> &mut u32 {
                 unsafe { self.0.get_unchecked_mut(idx) }
             }
-
-            unsafe fn insert_unchecked_value(&mut self, val: u32) -> usize {
-                let i = self.0.len();
-                self.0.push(val);
-                i
-            }
         }
-        unsafe impl<'a> CheckIndex<'a, usize> for BrandedTest<'a> {
+        unsafe impl CheckIndex<usize> for BrandedTest<'_> {
             type MutableMonotonic = No;
             fn check_index(&self, idx: usize) -> Option<usize> {
                 if idx < self.0.len() {
@@ -342,9 +446,13 @@ mod tests {
             }
         }
     }
-
     #[test]
     fn using_test() {
+        use inner::Test;
+
+        use crate::util::branded::{BlessIndex, BrandedImpl};
+
+        use super::{BrandSource, BrandedCollection};
         let v = Test::new(vec![1, 2, 3, 4, 8, 10]);
         v.with_tok(|v, tok| {
             assert!(v.bless(10, tok).is_none());
@@ -355,5 +463,79 @@ mod tests {
             assert_eq!(v.get_unchecked(checked), &4);
             assert_eq!(v.unbrand_ref().get(3), Some(&4));
         });
+    }
+
+    mod inner2 {
+
+        use crate::util::branded::{
+            BrandedCollection, BrandedImpl, CheckByChildIndices, CheckIndex, HasBrandLifetime,
+            InsertableBrandedCollection, No, NotInteriorMutable, Yes,
+        };
+
+        #[desmoxide_derive::inject_brand_lifetime('a)]
+        mod defs {
+            #[derive(Clone, Copy)]
+            pub struct TestItem<'a>(usize);
+            pub struct TestCollection<'a>(Vec<Test>);
+        }
+        #[derive(Clone, Copy)]
+        pub struct BrandedTest<'a>(pub BrandedTestItem<'a>);
+        unsafe impl<'a> HasBrandLifetime<'a> for BrandedTest<'a> {
+            type Downcast<'downcast> = BrandedTest<'downcast>;
+        }
+
+        pub type Test = BrandedTest<'static>;
+        unsafe impl NotInteriorMutable for BrandedTestCollection<'_> {}
+
+        impl<'brand> BrandedCollection<'brand, TestItem> for BrandedTestCollection<'brand> {
+            type Item = Test;
+
+            unsafe fn get_unchecked_index(&self, idx: TestItem) -> &Self::Item {
+                unsafe { self.0.get_unchecked(idx.0) }
+            }
+            unsafe fn get_unchecked_mut_index(&mut self, idx: TestItem) -> &mut Self::Item {
+                unsafe { self.0.get_unchecked_mut(idx.0) }
+            }
+        }
+        unsafe impl CheckByChildIndices for Test {
+            type Index = TestItem;
+
+            fn with_children<R, T: FnOnce(&[Self::Index]) -> R>(&self, f: T) -> Option<R> {
+                Some(f(&[self.0]))
+            }
+        }
+        unsafe impl CheckIndex<TestItem> for BrandedTestCollection<'_> {
+            type MutableMonotonic = Yes;
+
+            fn check_index(&self, idx: TestItem) -> Option<TestItem> {
+                if idx.0 >= self.0.len() {
+                    None
+                } else {
+                    Some(unsafe { idx.rebrand() })
+                }
+            }
+        }
+        impl<'brand> InsertableBrandedCollection<'brand, TestItem> for BrandedTestCollection<'brand> {
+            unsafe fn insert_unchecked_value(&mut self, val: Self::Item) -> TestItem {
+                let r = TestItem::new(self.0.len());
+                self.0.push(val);
+                r
+            }
+        }
+    }
+
+    #[test]
+    fn using_test2() {
+        use crate::util::branded::BlessIndex;
+
+        use super::BrandSource;
+
+        let mut v = TestCollection::new(vec![BrandedTest(TestItem::new(0))]);
+        v.with_tok_mut(|r, tok| {
+            let checked = r.bless(TestItem::new(0), tok).unwrap().rebrand_into_inner();
+            let item = BrandedTest(checked);
+            // look ma, no input validation
+            r.insert_unchecked(item, tok);
+        })
     }
 }
