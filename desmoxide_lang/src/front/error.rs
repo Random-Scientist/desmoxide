@@ -10,17 +10,17 @@ use super::lexer::Token;
 
 #[derive(Debug, Diagnostic, Error)]
 #[error("Compile Error")]
-pub struct CompileError {
+pub struct FrontendError {
     #[label("here")]
     location: SourceSpan,
 
     #[source]
     #[diagnostic_source]
-    error: FrontendError,
+    error: FrontendErrorType,
 }
 
 #[derive(Debug, Diagnostic, Error)]
-pub enum FrontendError {
+pub enum FrontendErrorType {
     #[error(transparent)]
     #[diagnostic(transparent)]
     ParseError(#[from] ParseError),
@@ -29,9 +29,9 @@ pub enum FrontendError {
     #[diagnostic(transparent)]
     LoweringError(#[from] LoweringError),
 }
-impl FrontendError {
-    pub(crate) fn with_span(self, span: Span, line_number: Option<NonZeroU32>) -> CompileError {
-        CompileError {
+impl FrontendErrorType {
+    pub(crate) fn with_span(self, span: Span, line_number: Option<NonZeroU32>) -> FrontendError {
+        FrontendError {
             location: SourceSpan::new(span.start.into(), span.end - span.start),
             error: self,
         }

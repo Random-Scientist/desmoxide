@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-desmoxide_derive = { path = "../desmoxide_derive" }
 arc-swap = "1.7.1"
 # Lexer generator
-logos = "0.14.2"
+logos = "0.15.0"
 # custom miette fork for diagnostics with some changes to the way SpanContents work
 miette = { git = "https://github.com/The-Minecraft-Scientist/miette.git", branch = "possibly_owned_span_data", features = [
     "fancy",
@@ -15,7 +14,7 @@ miette = { git = "https://github.com/The-Minecraft-Scientist/miette.git", branch
 # replace &mut T with value derived from itself
 replace_with = "0.1.7"
 # used to intern Idents in the frontend
-string-interner = "0.18.0"
+string-interner = "0.19.0"
 # used to generate a `AsRef<str>` impls to get the name of an enum variant
 strum = { version = "0.26.3", features = ["derive"] }
 # used to generate error types

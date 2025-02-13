@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use error::ParseError;
+use error::{FrontendError, ParseError};
 use lexer::Token;
 use logos::{Logos, Span};
 use miette::{SourceCode, SourceSpan, SpanContents};
@@ -25,12 +25,14 @@ mod lower;
 /// Parses a sequence of `Token`s to an Expr
 mod parser;
 
+pub(crate) type Interner = StringInterner<BufferBackend<SymbolU32>>;
+
 #[derive(Clone, Debug)]
 pub struct Frontend {
     id_counter: u32,
     cache: HashMap<ExpressionId, ExpressionCache>,
     sources: Arc<DesmoxideSourceCode>,
-    intern: InternerCell,
+    intern: Interner,
 }
 impl Frontend {
     pub fn new() -> Frontend {
@@ -38,7 +40,7 @@ impl Frontend {
             id_counter: 0,
             cache: HashMap::new(),
             sources: DesmoxideSourceCode::new_arc(),
-            intern: InternerCell(Some(StringInterner::new()).into()),
+            intern: Interner::new(),
         }
     }
     pub fn new_with_exprs(expressions: Vec<(u32, String)>) -> Self {
@@ -64,7 +66,7 @@ impl Frontend {
             id_counter: 0,
             cache,
             sources: Arc::new(v),
-            intern: InternerCell(Cell::new(Some(StringInterner::new()))),
+            intern: Interner::new(),
         }
     }
     /// Adds a new [`Expression`] to this [`Frontend`], returning a mutable reference to the inner backing string, as well as an
@@ -93,20 +95,17 @@ impl Frontend {
     pub fn expr(&self, id: ExpressionId) -> Arc<str> {
         self.sources.get_source(id)
     }
-    pub(crate) fn parse_expr(&self, id: ExpressionId) -> Result<(), ParseError> {
-        let mut intern = self
-            .intern
-            .take()
-            .expect("String interner should have been present!");
+    pub(crate) fn parse_expr(&mut self, id: ExpressionId) -> Result<(), FrontendError> {
         let cache = self.cache.get(&id).unwrap();
+        let start_offset = self.sources.get_start_offset(id);
         let res = parser::parse_expression(
-            Token::lexer_with_extras(&self.sources.get_source(id), &mut intern),
+            Token::lexer_with_extras(&self.sources.get_source(id), &mut self.intern),
             ParsingContext {
                 sources: &self.sources,
                 expression_id: id,
+                start_offset,
             },
         );
-        self.intern.set(Some(intern));
         cache.set(Some(res?));
         Ok(())
     }
@@ -234,14 +233,16 @@ impl DesmoxideSourceCode {
             this
         });
     }
-    fn map_span(&self, expr: ExpressionId, span: Span) -> SourceSpan {
-        let lineno = self.sources.get(&expr).unwrap().line_number;
-        let id_with = ExpressionIdWithMaybeLineNo { id: expr, lineno };
+    fn get_start_offset(&self, id: ExpressionId) -> usize {
+        let lineno = self.sources.get(&id).unwrap().line_number;
+        let id_with = ExpressionIdWithMaybeLineNo { id, lineno };
         assert!(self.expression_total_order.contains_key(&id_with));
-        let off = self
-            .expression_total_order
+        self.expression_total_order
             .range(..id_with)
-            .fold(0, |v, (_, &a)| v + a);
+            .fold(0, |v, (_, &a)| v + a)
+    }
+    fn map_span(&self, expr: ExpressionId, span: Span) -> SourceSpan {
+        let off = self.get_start_offset(expr);
         SourceSpan::new((off + span.start).into(), span.end - span.start)
     }
 }
@@ -341,27 +342,5 @@ impl ExpressionCache {
         Self {
             inner: Cell::new(None),
         }
-    }
-}
-pub(crate) type Interner = StringInterner<BufferBackend<SymbolU32>>;
-pub(crate) struct InternerCell(Cell<Option<Interner>>);
-impl Clone for InternerCell {
-    fn clone(&self) -> Self {
-        let v = self.0.take();
-        self.0.set(v.clone());
-        Self(Cell::new(v))
-    }
-}
-impl Debug for InternerCell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = self.0.take();
-        self.0.set(s.clone());
-        f.debug_tuple("InternCell").field(&s).finish()
-    }
-}
-impl Deref for InternerCell {
-    type Target = Cell<Option<StringInterner<BufferBackend<SymbolU32>>>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
