@@ -1,3 +1,8 @@
+# PROJECT IS ABANDONED
+Check the __[Desmos Native Clients](https://discord.com/channels/655972529030037504/1156331873648246794)__ thread in the discord for info on the various other projects attempting to accomplish similar goals.
+
+
+
 ## Desmoxide
 desmos, but its incredibly fast
 
